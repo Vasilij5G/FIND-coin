@@ -148,7 +148,6 @@ public:
 
 	// Setter
 	void SetInt32(uint32_t value);
-	void SetInt64(uint64_t value);
 	void Set(Int* a);
 	void SetBase10(char* value);
 	void SetBase16(char* value);

@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <windows.h>
-#define RELEASE "5.0 (29.10.2021)"
+#define RELEASE "1.2"
 
 using namespace std;
 using namespace argparse;
@@ -16,7 +16,7 @@ bool should_exit = false;
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
-const char* vstr = "Print version.                                   ";
+const char* vstr = "Print version. For help visit https://github.com/phrutis/LostCoins                                  ";
 const char* cstr = "Check the working of the code LostCoins                                                             ";
 const char* ustr = "Search only uncompressed addresses                                                                  ";
 const char* bstr = "Search both (uncompressed and compressed addresses)                                                 ";
@@ -24,7 +24,7 @@ const char* gstr = "Enable GPU calculation                                      
 const char* istr = "GPU ids: 0,1...: List of GPU(s) to use, default is 0                                                ";
 const char* xstr = "GPU gridsize: g0x,g0y,g1x,g1y, ...: Specify GPU(s) kernel gridsize, default is 8*(MP number),128    ";
 const char* ostr = "Outputfile: Output results to the specified file, default: Found.txt                                ";
-const char* mstr = "-m  1-10000 For GPU: Reloads random started hashes every billions in counter. Default: 100 billion  ";
+const char* mstr = "Specify maximun number of addresses found by each kernel call                                       ";
 const char* tstr = "ThreadNumber: Specify number of CPUs thread, default is number of core                              ";
 const char* estr = "Disable SSE hash function                                                                           ";
 const char* lstr = "List cuda enabled devices                                                                           ";
@@ -34,7 +34,7 @@ const char* fstr = "RIPEMD160 binary hash file path                             
 const char* sstr = "PassPhrase   (Start bit range)                                                                      ";
 const char* szez = "PassPhrase 2 (End bit range)                                                                        ";
 const char* sdiz = "Display modes -d 0 [info+count], -d 1 SLOW speed [info+hex+count], Default -d 2 [count] HIGH speed  ";
-const char* scolor = "Text color: -k 1-255 Recommended 3, 10, 11, 14, 15 (default: -k 15)                               ";
+const char* scolor = "Colors: 1-255 Recommended 3, 10, 11, 14, 15, 240 (White-black)                                    ";
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
@@ -122,7 +122,7 @@ int main(int argc, const char* argv[])
 	};
 
 	//----------------------------------------------------------------------------
-	console con(200, 700);
+	console con(200, 400);
 
 	//----------------------------------------------------------------------------
 
@@ -138,11 +138,10 @@ int main(int argc, const char* argv[])
 	string hash160File = "";
 	int nbCPUThread = Timer::getCoreNumber();
 	int nbit = 0;
-	int nbit2 = 0;
 	int color = 15;
 	bool tSpecified = false;
 	bool sse = true;
-	uint64_t maxFound = 100;
+	uint32_t maxFound = 50;
 	uint64_t rekey = 0;
 	bool paranoiacSeed = false;
 	string rangeStart1 = "1";
@@ -188,7 +187,7 @@ int main(int argc, const char* argv[])
 	}
 
 	if (parser.exists("check")) {
-		printf(" LostCoins v" RELEASE "\n");
+		printf("LostCoins v" RELEASE "\n");
 		printf("Checking... Int\n\n");
 		Int K;
 		K.SetBase16("3EF7CEF65557B61DC4FF2313D0049C584017659A32B002C105D04A19DA52CB47");
@@ -295,9 +294,6 @@ int main(int argc, const char* argv[])
 	HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
 	SetConsoleTextAttribute(hConsole, color);
 
-
-	nbit2 += nbCPUThread;
-
 	// Let one CPU core free per gpu is gpu is enabled
 	// It will avoid to hang the system
 	if (!tSpecified && nbCPUThread > 1 && gpuEnable)
@@ -307,7 +303,7 @@ int main(int argc, const char* argv[])
 
 	{
 		printf("\n");
-		printf(" LostCoins v" RELEASE "\n");
+		printf(" LostCoins v1.0\n");
 		printf("\n");
 		printf(" SEARCH MODE  : %s\n", searchMode == SEARCH_COMPRESSED ? "COMPRESSED" : (searchMode == SEARCH_UNCOMPRESSED ? "UNCOMPRESSED" : "COMPRESSED & UNCOMPRESSED"));
 		printf(" DEVICE       : %s\n", (gpuEnable && nbCPUThread > 0) ? "CPU & GPU" : ((!gpuEnable && nbCPUThread > 0) ? "CPU" : "GPU"));
@@ -332,25 +328,33 @@ int main(int argc, const char* argv[])
 
 			}
 		}
-		
+		char* speed;
+		if (diz == 0) {
+			speed = "NORMAL";
+		}
+		if (diz == 1) {
+			speed = "SLOW (hashes sha256 are displayed)";
+		}
+		if (diz > 1) {
+			speed = "HIGH";
+		}
 		setlocale(LC_ALL, "Russian");
 		printf("\n");
 		printf(" RANDOM MODE  : %llu\n", rekey);
+		printf(" ROTOR SPEED  : %s\n", speed);
 		printf(" CHARACTERS   : %d\n", nbit);
 		printf(" PASSPHRASE   : %s\n", seed.c_str());
 		printf(" PASSPHRASE 2 : %s\n", zez.c_str());
 		printf(" DISPLAY MODE : %d\n", diz);
 		printf(" TEXT COLOR   : %d\n", color);
-		if (rekey == 2 || rekey == 4 || rekey == 6) {
-			printf(" GPU REKEY    : %d000000000\n", maxFound);
-		}
+		printf(" MAX FOUND    : %d\n", maxFound);
 		printf(" HASH160 FILE : %s\n", hash160File.c_str());
 		printf(" OUTPUT FILE  : %s\n", outputFile.c_str());
 	}
 
 	if (SetConsoleCtrlHandler(CtrlHandler, TRUE)) {
 		LostCoins* v = new LostCoins(hash160File, seed, zez, diz, searchMode, gpuEnable,
-			outputFile, sse, maxFound, rekey, nbit, nbit2, paranoiacSeed, rangeStart1, rangeEnd1, should_exit);
+			outputFile, sse, maxFound, rekey, nbit, paranoiacSeed, rangeStart1, rangeEnd1, should_exit);
 
 		v->Search(nbCPUThread, gpuId, gridSize, should_exit);
 

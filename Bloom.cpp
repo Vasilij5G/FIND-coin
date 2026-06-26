@@ -12,8 +12,8 @@
 
 Bloom::Bloom(unsigned long long entries, double error) : _ready(0)
 {
-    if (entries < 1 || error <= 0) {
-        printf("  Bloom init error!\n  The base is empty! \n");
+    if (entries < 1000 || error <= 0 || error >= 1) {
+        printf("Bloom init error\n");
         return;
     }
 

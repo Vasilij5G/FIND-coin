@@ -24,11 +24,7 @@ typedef struct {
 	int  gridSizeX;
 	int  gridSizeY;
 	int  gpuId;
-	Int rangeStart1;
-	Int rangeEnd1;
-	Int rangeDiff;
-	Int rangeDiff2;
-	Int rangeDiff3;
+
 } TH_PARAM;
 
 
@@ -39,13 +35,12 @@ public:
 
 	LostCoins(std::string addressFile, std::string seed, std::string zez, int diz, int searchMode,
 		bool useGpu, std::string outputFile, bool useSSE, uint32_t maxFound,
-		uint64_t rekey, int nbit, int nbit2, bool paranoiacSeed, const std::string& rangeStart1, const std::string& rangeEnd1, bool& should_exit);
+		uint64_t rekey, int nbit, bool paranoiacSeed, const std::string& rangeStart1, const std::string& rangeEnd1, bool& should_exit);
 	~LostCoins();
 
 	void Search(int nbThread, std::vector<int> gpuId, std::vector<int> gridSize, bool& should_exit);
 	void FindKeyCPU(TH_PARAM* p);
 	void FindKeyGPU(TH_PARAM* p);
-	void SetupRanges(uint32_t totalThreads);
 
 private:
 
@@ -82,21 +77,14 @@ private:
 	int nbCPUThread;
 	int nbGPUThread;
 	int nbFoundKey;
-	uint64_t targetCounter;
 	int nbit;
-	int nbit2;
 	int diz;
-	int err;
-	int stope;
-	int kusok;
-	uint64_t value777;
 	uint64_t rekey;
 	uint64_t lastRekey;
 	std::string outputFile;
 	std::string seed;
 	std::string zez;
 	std::string addressFile;
-	std::string nos2;
 	bool useSSE;
 	Int rangeStart1;
 	Int rangeEnd1;
@@ -104,8 +92,7 @@ private:
 	Int rangeDiff2;
 	Int rangeDiff3;
 	Int key22;
-	int minuty;
-	uint64_t maxFound;
+	uint32_t maxFound;
 
 	uint8_t* DATA;
 	uint64_t TOTAL_ADDR;

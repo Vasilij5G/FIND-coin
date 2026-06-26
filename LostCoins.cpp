@@ -1,14 +1,13 @@
-Ôªø#include "LostCoins.h"
+#include "LostCoins.h"
 #include "Base58.h"
 #include "Bech32.h"
+
 #include "hash/sha512.h"
 #include "IntGroup.h"
 #include "Timer.h"
 #include "hash/ripemd160.h"
 #include <cstring>
 #include <cmath>
-#include <stdexcept>
-#include <cassert>
 #include <algorithm>
 #include <iostream>
 
@@ -22,18 +21,11 @@
 #include <windows.h>
 #include <conio.h>
 
+#include <stdio.h>
 #include <vector>
 #include <random>
 #include <ctime>
 #include <iomanip>
-
-#include <atomic>
-#include <mutex>
-#include <thread>
-#include <fstream>
-#include <iterator>
-#include <regex>
-
 using namespace std;
 
 #ifndef WIN64
@@ -49,7 +41,7 @@ Point _2Gn;
 
 LostCoins::LostCoins(string addressFile, string seed, string zez, int diz, int searchMode,
 	bool useGpu, string outputFile, bool useSSE, uint32_t maxFound,
-	uint64_t rekey, int nbit, int nbit2, bool paranoiacSeed, const std::string& rangeStart1, const std::string& rangeEnd1, bool& should_exit)
+	uint64_t rekey, int nbit, bool paranoiacSeed, const std::string& rangeStart1, const std::string& rangeEnd1, bool& should_exit)
 {
 	this->searchMode = searchMode;
 	this->useGpu = useGpu;
@@ -59,15 +51,12 @@ LostCoins::LostCoins(string addressFile, string seed, string zez, int diz, int s
 	this->addressFile = addressFile;
 	this->rekey = rekey;
 	this->nbit = nbit;
-	this->nbit2 = nbit2;
 	this->maxFound = maxFound;
 	this->seed = seed;
 	this->zez = zez;
 	this->diz = diz;
 	this->searchType = P2PKH;
-	this->rangeStart1;
-	this->rangeEnd1;
-	this->rangeDiff;
+
 	secp = new Secp256K1();
 	secp->Init();
 
@@ -92,86 +81,42 @@ LostCoins::LostCoins(string addressFile, string seed, string zez, int diz, int s
 
 	bloom = new Bloom(2 * N, 0.000001);
 
-	if (N > 100) {
-		uint64_t percent = (N - 1) / 100;
-		uint64_t i = 0;
-		printf("\n");
-		while (i < N && !should_exit) {
-			memset(buf, 0, 20);
-			memset(DATA + (i * 20), 0, 20);
-			if (fread(buf, 1, 20, wfd) == 20) {
-				bloom->add(buf, 20);
-				memcpy(DATA + (i * 20), buf, 20);
-				if (i % percent == 0) {
-					printf("\r Loading      : %llu %%", (i / percent));
-					fflush(stdout);
-				}
-			}
-			i++;
-		}
-		printf("\n");
-		fclose(wfd);
-
-		if (should_exit) {
-			delete secp;
-			delete bloom;
-			if (DATA)
-				free(DATA);
-			exit(0);
-		}
-
-		BLOOM_N = bloom->get_bytes();
-		TOTAL_ADDR = N;
-		printf(" Loaded       : %s address\n", formatThousands(i).c_str());
-		printf("\n");
-
-		bloom->print();
-		printf("\n");
-
-		lastRekey = 0;
-	
-	
-	}
-	else {
-		uint64_t percent = N;
-		uint64_t i = 0;
-		printf("\n");
-		while (i < N && !should_exit) {
-			memset(buf, 0, 20);
-			memset(DATA + (i * 20), 0, 20);
-			if (fread(buf, 1, 20, wfd) == 20) {
-				bloom->add(buf, 20);
-				memcpy(DATA + (i * 20), buf, 20);
-				
-				printf("\r Loading      : %d address", N);
+	uint64_t percent = (N - 1) / 100;
+	uint64_t i = 0;
+	printf("\n");
+	while (i < N && !should_exit) {
+		memset(buf, 0, 20);
+		memset(DATA + (i * 20), 0, 20);
+		if (fread(buf, 1, 20, wfd) == 20) {
+			bloom->add(buf, 20);
+			memcpy(DATA + (i * 20), buf, 20);
+			if (i % percent == 0) {
+				printf("\r Loading      : %llu %%", (i / percent));
 				fflush(stdout);
-				
 			}
-			i++;
 		}
-		printf("\n");
-		fclose(wfd);
+		i++;
+	}
+	printf("\n");
+	fclose(wfd);
 
-		if (should_exit) {
-			delete secp;
-			delete bloom;
-			if (DATA)
-				free(DATA);
-			exit(0);
-		}
-
-		BLOOM_N = bloom->get_bytes();
-		TOTAL_ADDR = N;
-		printf(" Loaded       : %s address\n", formatThousands(i).c_str());
-		printf("\n");
-
-		bloom->print();
-		printf("\n");
-
-		lastRekey = 0;
+	if (should_exit) {
+		delete secp;
+		delete bloom;
+		if (DATA)
+			free(DATA);
+		exit(0);
 	}
 
-	
+	BLOOM_N = bloom->get_bytes();
+	TOTAL_ADDR = N;
+	printf(" Loaded       : %s address\n", formatThousands(i).c_str());
+	printf("\n");
+
+	bloom->print();
+	printf("\n");
+
+	lastRekey = 0;
 
 	// Compute Generator table G[n] = (n+1)*G
 
@@ -196,117 +141,585 @@ LostCoins::LostCoins(string addressFile, string seed, string zez, int diz, int s
 	beta2.SetBase16("851695d49a83f8ef919bb86153cbcb16630fb68aed0a766a3ec693d68e6afa40");
 	lambda2.SetBase16("ac9c52b33fa3cf1f5ad9e3fd77ed9ba4a880b9fc8ec739c2e0cfc810b51283ce");
 	
+
+	if (this->nbit <= 0) {
+		string salt = "LostCoins";
+		unsigned char hseed[64];
+		pbkdf2_hmac_sha512(hseed, 64, (const uint8_t*)seed.c_str(), seed.length(),
+			(const uint8_t*)salt.c_str(), salt.length(),
+			2048);
+		startKey.SetInt32(0);
+		//sha256(hseed, 64, (unsigned char*)startKey.bits64);
+	}
+	else {
+		startKey.Rand(this->nbit);
+	}
+	
 	char *ctimeBuff;
 	time_t now = time(NULL);
 	ctimeBuff = ctime(&now);
 	printf("  Start Time  : %s", ctimeBuff);
 	
 	if (rekey == 0) {
-
-		if (zez == "keys") {
-			printf("\n  Random mode : %.0f \n  Rotor       : Loading private keys from file: %s ... \n", (double)rekey, seed.c_str());
-		}
-		else {
-			printf("\n  Random mode : %.0f \n  Rotor       : Loading passphrases from file: %s ... \n", (double)rekey, seed.c_str());
-		}
-
-		ifstream ifs2(seed);
-		int n = 0;
-		string s;
-		while (getline(ifs2, s)) {
-			n++;
-			if (n > 2147000000) {
-				printf("  The file %s has more lines than 2,147,483,647 !!! Split the file into chunks 1,000,000,000 lines in EmEditor https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str());
-				exit(1);
-			}
-
-		}
-		ifs2.close();
-		stope += n - 2;
-		this->kusok = n / nbit2;
-
-		if (zez == "keys") {
-			printf("  Loaded      : %d private keys \n", stope);
-		}
-		else {
-			printf("  Loaded      : %d passphrases \n", stope);
-		}
-
-		printf("  Rotor       : Only letters and symbols: –ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./? others will be skipped!\n");
-		printf("  Rotor       : For large files use -t 11 max (1 core = ~30.000/s, 1 thread = ~5.000/s) Text file max 2,147,483,647 lines!\n");
-		if (nbit > 0) {
-			printf("  Rotor       : Additional conversion of passphrase to sha256 x%d times. Works on only one core -t 1\n", nbit);
-		}
-		if (nbit2 > 11) {
-			printf("  Rotor CPU   : Only works 11 core !!! You are using (%d) cores!!! It will NOT add speed! Multithreading work is 11 core max! USE max -t 11 \n", nbit2);
-		}
-		printf("  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n");
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Mode        : Constant generation random hashes \n  Reload      : Every 1 hex new \n  How work R0 : Cores generate hashes into a buffer \n  How work R0 : After they are sent to the device for checking with a bloom filter to find a positive bitcoin address.  \n  How work R0 : Good speed for CPUs. For GPUs -r 0 slow! Use other mode -r 1,2,3,4 for speed\n  Range bit   : %.0f (bit) recommended -n 256 (256 searches in the 256-252 range and below) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, (double)nbit);
 
 	}
 	if (rekey == 1) {
+
 		char* gyg = &seed[0];
 		char* fun = &zez[0];
 
 		this->rangeStart1.SetBase16(gyg);
 		this->rangeEnd1.SetBase16(fun);
 
-		if (seed == "") {
-			this->rangeStart1.Add(1);
-			printf("\n  The START of the range is empty!!! Default: 1\n");
-		}
-
-		if (zez == "") {
-			this->rangeEnd1.Set(&this->rangeStart1);
-			this->rangeEnd1.Add(10000000000000000);
-			printf("\n  The END of the range is empty!!! Default: START + 10000000000000000\n");
-		}
-		
 		this->rangeDiff2.Set(&this->rangeEnd1);
 		this->rangeDiff2.Sub(&this->rangeStart1);
-		printf("\n  Random mode : %.0f \n  Random      : Finding in a range \n", (double)rekey);
-	
+		this->rangeDiff3.Set(&this->rangeEnd1);
+
+		int gaz2 = (int)rangeDiff2.GetBase10().c_str();
+
+		printf("\n  Random mode : %.0f \n  Random      : Finding in a ranges \n", (double)rekey);
 		printf("  Global start: %064s (%d bit)\n", this->rangeStart1.GetBase16().c_str(), this->rangeStart1.GetBitLength());
 		printf("  Global end  : %064s (%d bit)\n", this->rangeEnd1.GetBase16().c_str(), this->rangeEnd1.GetBitLength());
 		printf("  Global range: %064s (%d bit)\n", this->rangeDiff2.GetBase16().c_str(), this->rangeDiff2.GetBitLength());
- 
-		if (nbit2 < 1) {
-			if (nbit == 0) {
-				printf("  Rotor       : Save checkpoint every (default: 60 minutes) to file LostCoins-Continue.bat Use -n ? (1-1000 minutes)\n");
-			}
-			else {
-				printf("  Rotor       : Save checkpoint every %d minutes to file LostCoins-Continue.bat \n", nbit);
-			}
-		
-		}
-		
-		printf("  Site        : https://github.com/unclevito2017 \n  Donate      : bc1qus09g0n5jwg79gje76zxqmzt3gpw80dcqspsmm \n\n");
+		printf("  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n");
 	}
-
-
 	if (rekey == 2) {
 
 		printf("\n  Random mode : %.0f \n  Random      : Finding in a range \n", (double)rekey);
 		printf("  Use range   : %d (bit)\n", nbit);
-		printf("  Rotor       : Random generate hex in range %d \n", nbit);
-		if (nbit2 > 0) {
-			printf("  Rotor CPU   : %d cores constant random generation hashes in %d (bit) range\n", nbit2, nbit);
-		}
-		else {
-			printf("  Rotor GPU   : Reloading starting hashes in range %d (bit) every %d.000.000.000 on the counter\n", nbit, maxFound);
-		}
-		printf("  Site        : https://github.com/unclevito2017 \n  Donate      : bc1qus09g0n5jwg79gje76zxqmzt3gpw80dcqspsmm \n\n");
+		printf("  Rotor       : Random generate hex in range %d (bit)\n", nbit);
+		printf("  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n");
 	}
 
 	if (rekey == 3) {
-		
-		printf("\n  Random mode : %.0f \n  Random      : Part+value+part2+value \n", (double)rekey);
-		printf("  Part        : %s \n", seed.c_str());
-		printf("  Value       : %d x (0-f) \n", nbit);
-		printf("  Part 2      : %s \n", zez.c_str());
-		printf("  Value 2     : %d x (0-f) \n", maxFound);
-		printf("  Example     : %s[<<%d>>]%s[<<%d>>] \n", seed.c_str(), nbit, zez.c_str(), maxFound);
-		printf("  Site        : https://github.com/unclevito2017 \n  Donate      : bc1qus09g0n5jwg79gje76zxqmzt3gpw80dcqspsmm \n\n");
-		
+
+		printf("\n  Random mode : %.0f \n  Random      : Finding a puzzle in a ranges", (double)rekey);
+
+		if (nbit == 1) {
+			string tup = "0";
+			string tup2 = "f";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 2) {
+			string tup = "01";
+			string tup2 = "ff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 3) {
+			string tup = "001";
+			string tup2 = "fff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 4) {
+			string tup = "0001";
+			string tup2 = "ffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 5) {
+			string tup = "00001";
+			string tup2 = "fffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 6) {
+			string tup = "000001";
+			string tup2 = "ffffff";
+
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 7) {
+			string tup = "0000001";
+			string tup2 = "fffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 8) {
+			string tup = "00000001";
+			string tup2 = "ffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 9) {
+			string tup = "000000001";
+			string tup2 = "fffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 10) {
+			string tup = "0000000001";
+			string tup2 = "ffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 11) {
+			string tup = "00000000001";
+			string tup2 = "fffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 12) {
+			string tup = "000000000001";
+			string tup2 = "ffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 13) {
+			string tup = "0000000000001";
+			string tup2 = "fffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 14) {
+			string tup = "00000000000001";
+			string tup2 = "ffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 15) {
+			string tup = "000000000000001";
+			string tup2 = "fffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 16) {
+			string tup = "000000000000001";
+			string tup2 = "fffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 17) {
+			string tup = "00000000000000001";
+			string tup2 = "fffffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 18) {
+			string tup = "000000000000000001";
+			string tup2 = "ffffffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 19) {
+			string tup = "0000000000000000001";
+			string tup2 = "fffffffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 20) {
+			string tup = "00000000000000000001";
+			string tup2 = "ffffffffffffffffffff";
+
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 21) {
+			string tup = "000000000000000000001";
+			string tup2 = "fffffffffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 22) {
+			string tup = "0000000000000000000001";
+			string tup2 = "ffffffffffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 23) {
+			string tup = "00000000000000000000001";
+			string tup2 = "fffffffffffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 24) {
+			string tup = "000000000000000000000001";
+			string tup2 = "ffffffffffffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit == 25) {
+			string tup = "0000000000000000000000001";
+			string tup2 = "fffffffffffffffffffffffff";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+		if (nbit > 25) {
+			string tup = "000000000000000000000000001...";
+			string tup2 = "fffffffffffffffffffffffffff...";
+			std::stringstream ss1;
+			ss1 << seed << tup;
+			std::string input8 = ss1.str();
+
+			char* gyg1 = &input8[0];
+			Int st1;
+			st1.SetBase10(gyg1);
+
+			std::stringstream ss2;
+			ss2 << seed << tup2;
+			std::string input9 = ss2.str();
+
+			char* fun2 = &input9[0];
+			Int fin2;
+			fin2.SetBase10(fun2);
+			printf("\n  Start       : %s \n  Finish      : %s \n  Range       : %s + %.0f x (0-f) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", input8.c_str(), input9.c_str(), seed.c_str(), (double)nbit);
+		}
+
 	}
 	if (rekey == 4) {
 
@@ -315,52 +728,226 @@ LostCoins::LostCoins(string addressFile, string seed, string zez, int diz, int s
 		printf("  Start range : %s (bit)\n", seed.c_str());
 		printf("  End range   : %s (bit)\n", zez.c_str());
 		printf("  Rotor       : Generate random hex in ranges %s <~> %s \n", seed.c_str(), zez.c_str());
-		if (nbit2 > 0) {
-			printf("  Rotor CPU   : %d cores constant random generation hashes in ranges\n", nbit2);
-		}
-		else {
-			printf("  Rotor GPU   : Reloading new starting hashes in ranges every %d.000.000.000 on the counter\n", maxFound);
-		}
-		printf("  Site        : https://github.com/unclevito2017 \n  Donate      : bc1qus09g0n5jwg79gje76zxqmzt3gpw80dcqspsmm \n\n");
+		printf("  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n");
 
-	}
-
-	if (rekey == 5) {
-		printf("\n  Mode        : %.0f \n  Using       : Brute force Slow algorithm -t 1 USE ONLY 1 CPU CORE\n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~(space) \n  Rotor       : Passphrase %s+%s \n", (double)rekey, seed.c_str(), zez.c_str());
-		printf("  Site        : https://github.com/unclevito2017 \n  Donate      : bc1qus09g0n5jwg79gje76zxqmzt3gpw80dcqspsmm \n\n");
 	}
 	
+	
+	if (rekey == 5) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 10 digits  \n  List        : 0123456789 \n  Rotor       : Generation of %.0f random digits \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
 	if (rekey == 6) {
 		setlocale(LC_ALL, "Russian");
-		printf("\n  Random mode : %.0f \n  ", (double)rekey);
-		if (nbit2 > 0) {
-			printf("Rotor CPU   : %d cores constant random generation hashes in range %d (bit)", nbit2, nbit);
-		}
-		else {
-			printf("Rotor GPU   : Reloading new starting hashes in range every %d.000.000.000 on the counter", maxFound);
-		}
-	
-		printf("\n  Range bit   : %d (bit) Recommended -n 256 (256 searches in the 252-256 range and below) \n  Site        : https://github.com/unclevito2017 \n  Donate      : bc1qus09g0n5jwg79gje76zxqmzt3gpw80dcqspsmm \n\n", nbit);
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 26 letters \n  List        : abcdefghijklmnopqrstuvwxyz \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
 	}
 	if (rekey == 7) {
-		printf("\n  Random Mode : %.0f \n  Using       : Full random 252-256 bit  \n", (double)rekey);
-		printf("  Site        : https://github.com/unclevito2017 \n  Donate      : bc1qus09g0n5jwg79gje76zxqmzt3gpw80dcqspsmm \n\n");
-	
-	
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 26 letters \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
 	}
-	
 	if (rekey == 8) {
-		printf("\n  Random Mode : %.0f \n  Using       : random %d letters  \n", (double)rekey, nbit);
-		printf("  Rotor       : %s+<<%d>>+%s \n", seed, nbit, zez);
-		printf("  Site        : https://github.com/unclevito2017 \n  Donate      : bc1qus09g0n5jwg79gje76zxqmzt3gpw80dcqspsmm \n\n");
-
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 36 symbols \n  List        : abcdefghijklmnopqrstuvwxyz0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
 	}
-	if (rekey > 8) {
-		printf("\n  ERROR!!! \n  Check -r ? \n  Range -r from 1 - 8\n  BYE   \n\n");
+	if (rekey == 9) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 36 symbols \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 10) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 52 letters \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 11) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 62 letters \n  List        : abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 12) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 93 symbols \n  List        : abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 13) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 33 letters (russian) \n  List        : ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 14) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 33 letters (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 15) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 66 letters (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 16) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 76 symbols (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 17) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 107 symbols (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 18) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random digits] \n  Using       : 10 digits \n  List        : 0123456789 \n  Rotor       : Generation of %.0f random digits \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 19) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 26 letters \n  List        : abcdefghijklmnopqrstuvwxyz \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 20) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 26 letters \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 21) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 36 symbols \n  List        : abcdefghijklmnopqrstuvwxyz0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 22) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 36 symbols \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 23) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 52 letters \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 24) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 62 letters \n  List        : abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 25) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 92 symbols \n  List        : abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 26) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 33 letters (russian) \n  List        : ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 27) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 33 letters (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 28) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 66 letters (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 29) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 76 symbols (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n   Donate     : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 30) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s+[random letters] \n  Using       : 106 symbols (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 31) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 10 digits \n  List        : 0123456789 \n  Rotor       : Generation of %.0f random digits \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 32) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 26 letters \n  List        : abcdefghijklmnopqrstuvwxyz \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 33) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 26 letters \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 34) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 36 symbols \n  List        : abcdefghijklmnopqrstuvwxyz0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 35) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 36 symbols \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 36) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 52 letters \n  List        : ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 37) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 62 letters \n  List        : abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 38) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 93 symbols \n  List        : abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 39) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 33 letters (russian) \n  List        : ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 40) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 33 letters (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 41) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 66 letters (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 42) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 76 symbols (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789 \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate     : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 43) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(space)[random letters] \n  Using       : 107 symbols (russian) \n  List        : ¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~ \n  Rotor       : Generation of %.0f random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 44) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s [not supported] \n  Using       : L(llllllll)dd \n  Rotor       : Generation customizable %.0f random letters l \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 45) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s [not supported] \n  Using       : L(llllllll)dddd \n  Rotor       : Generation customizable %.0f random letters l \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 46) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s [not supported] \n  Using       : L(llllllll)dddddd \n  Rotor       : Generation customizable %.0f random letters l \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 47) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s [not supported] \n  Using       : 2 words (3-9 size) \n  Rotor       : Generation random 2 words from letters l (3-9) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str());
+	}
+	if (rekey == 48) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s \n  Using       : Passphrase + 2 word (3-9 size) \n  Rotor       : Generation random 2 words from letters l (3-9) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str());
+	}
+	if (rekey == 49) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s [not supported] \n  Using       : Mnemonic 12 words (3-5 size) \n  Rotor       : Generation random 12 words from letters l (size 3-5) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str());
+	}
+	if (rekey == 50) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s [not supported] \n  Using       : Mnemonic 12 words (3-7 size) \n  Rotor       : Generation random 12 words from letters l (size 3-7) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str());
+	}
+	if (rekey == 51) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s [not supported] \n  Using       : Mnemonic 12 words (3-10 size) \n  Rotor       : Generation random 12 words from letters l (size 3-10) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str());
+	}
+	if (rekey == 52) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s [not supported] \n  Using       : Mnemonic 12 words 3-12 (size) \n  Rotor       : Generation random 12 words from letters l (size 3-12) \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str());
+	}
+
+
+
+	if (rekey == 54) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Mode        : %.0f Very very slow algaritm (For one CPU core only!!! -t 1, in GPU work 1 core)\n  Passphrase  : Starting word %s to continue... \n  Using       : Passphrase -> Passphrasf -> Paszzzzzzz - ZZZZZZZZZZZ (Uld) \n  Rotor       : Sequential continuation of generation  \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str());
+	}
+	if (rekey == 55) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 31 symbols  \n  List        : !#$%&'()*+,-./:;<=>?@[\]^_`{|}~ \n  Rotor       : Generation of %.0f random symbols \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str(), (double)nbit);
+	}
+	if (rekey == 56) {
+		setlocale(LC_ALL, "Russian");
+		printf("\n  Random mode : %.0f \n  Passphrase  : %s(not supported) \n  Using       : 26 letters \n  List        : abcdefghijklmnopqrstuvwxyz \n  Rotor       : Generation of 3-9 random letters \n  Site        : https://github.com/phrutis/LostCoins \n  Donate      : bc1qh2mvnf5fujg93mwl8pe688yucaw9sflmwsukz9 \n\n", (double)rekey, seed.c_str());
+	}
+	
+
+	if (rekey > 56) {
+		printf("\n  ERROR!!! \n  Check -r ? \n  Range -r from 0 - 56\n  BYE   \n\n");
 		exit(-1);
 
 	}
-	
+
 
 }
 
@@ -416,6 +1003,7 @@ void LostCoins::output(string addr, string pAddr, string pAddrHex)
 	//else
 	{
 
+
 		switch (searchType) {
 		case P2PKH:
 			fprintf(f, "Priv (WIF): p2pkh:%s\n", pAddr.c_str());
@@ -427,17 +1015,12 @@ void LostCoins::output(string addr, string pAddr, string pAddrHex)
 			fprintf(f, "Priv (WIF): p2wpkh:%s\n", pAddr.c_str());
 			break;
 		}
-		fprintf(f, "Priv (HEX): %s\n", pAddrHex.c_str());
+		fprintf(f, "Priv (HEX): 0x%s\n", pAddrHex.c_str());
 
 	}
 	HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
 	SetConsoleTextAttribute(hConsole, FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-
-	printf("\n  =================================================================================");  
-	printf("\n  * PubAddress: %s                                *", addr.c_str());
-	printf("\n  * Priv(WIF) : p2pkh:%s        *", pAddr.c_str());
-	printf("\n  * Priv(HEX) : %s  *", pAddrHex.c_str());
-	printf("\n  =================================================================================\n");
+	printf("\n\n=================================================================================\n* PubAddress: %s \n* Priv (WIF): p2pkh: %s \n* Priv (HEX): %s \n=================================================================================\n\n", addr.c_str(), pAddr.c_str(), pAddrHex.c_str());
 	if (needToClose)
 		fclose(f);
 
@@ -500,8 +1083,7 @@ bool LostCoins::checkPrivKey(string addr, Int &key, int32_t incr, int endomorphi
 		//}
 		string chkAddr = secp->GetAddress(searchType, mode, p);
 		if (chkAddr != addr) {
-			printf("\n  Check your text file for junkand scribbles\n");
-			printf("  Warning, wrong private key generated !\n");
+			printf("\nWarning, wrong private key generated !\n");
 			printf("  Addr :%s\n", addr.c_str());
 			printf("  Check:%s\n", chkAddr.c_str());
 			printf("  Endo:%d incr:%d comp:%d\n", endomorphism, incr, mode);
@@ -827,7 +1409,7 @@ void LostCoins::checkAddressesSSE(bool compressed, Int key, int i, Point p1, Poi
 }
 
 
-static string const digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~ ";
+static string const digits = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 
 string increment(string value) {
@@ -874,18 +1456,9193 @@ void print_digits(int pos)
 	}
 }
 
-
-
 // ----------------------------------------------------------------------------
 void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 {
+
+	if (rekey == 0) {
+		key.Rand(nbit);
+		if (diz == 0) {
+			printf("\r (%d bit) ", key.GetBitLength());
+		}
+		if (diz == 1) {
+			printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+		}
+	}
 	if (rekey == 1) {
 
 		char* gyg = &seed[0];
+
+		char* fun = &zez[0];
 		this->rangeStart1.SetBase16(gyg);
-		key.Set(&rangeStart1);
+		this->rangeEnd1.SetBase16(fun);
+
+
+
+		this->rangeDiff2.Set(&this->rangeEnd1);
+		this->rangeDiff2.Sub(&this->rangeStart1);
+
+		this->rangeDiff3.Set(&this->rangeStart1);
+
+		int tuk = rangeDiff2.GetBitLength();
+
+		int br = rand() % tuk + 1;
+
+
+		if (br == 1) {
+			int N = 1;
+
+			char str[]{ "0123" };
+			int strN = 4;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 2) {
+			int N = 1;
+			char str[]{ "4567" };
+			int strN = 4;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+
+			std::stringstream ss;
+			ss << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 3) {
+			int N = 1;
+
+			char str[]{ "89ab" };
+			int strN = 4;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 4) {
+			int N = 1;
+			char str[]{ "cdef" };
+			int strN = 4;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+
+			std::stringstream ss;
+			ss << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 5) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 1;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 6) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 1;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 7) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+			int N = 1;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 8) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 1;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 9) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 2;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 10) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 2;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 11) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 2;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 12) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 2;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 13) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 3;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 14) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 3;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 15) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 3;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 16) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 3;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 17) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 4;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 18) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 4;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 19) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 4;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 20) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 4;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 21) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 5;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 22) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 5;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 23) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 5;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 24) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 5;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 25) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 6;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 26) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 6;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 27) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 6;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 28) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 6;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 29) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 7;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 30) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 7;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 31) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 7;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 32) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 7;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 33) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 8;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 34) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 8;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 35) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 8;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 36) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 8;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 37) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 9;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 38) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 9;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 39) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 9;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 40) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 9;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 41) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 10;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 42) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 10;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 43) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 10;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 44) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 10;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 45) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 11;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 46) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 11;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 47) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 11;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 48) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 11;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+
+		if (br == 49) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 12;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 50) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 12;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 51) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 12;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 52) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 12;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 53) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 13;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 54) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 13;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 55) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 13;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 56) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 13;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 57) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 14;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 58) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 14;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 59) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 14;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 60) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 14;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 61) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 15;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 62) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 15;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 63) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 15;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 64) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 15;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 65) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 16;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 66) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 16;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 67) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 16;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 68) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 16;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 69) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 17;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 70) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 17;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 71) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 17;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 72) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 17;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 73) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 18;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 74) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 18;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 75) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 18;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 76) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 18;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+
+		if (br == 77) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 19;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 78) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 19;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 79) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 19;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 80) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 19;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 81) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 20;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 82) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 20;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 83) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 20;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 84) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 20;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 85) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 21;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 86) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 21;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 87) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 21;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 88) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 21;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 89) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 22;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 90) {
+			int N2 = 4;
+			char str2[]{ "4567" };
+			int strN2 = 1;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 22;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 91) {
+			int N2 = 4;
+			char str2[]{ "89ab" };
+			int strN2 = 1;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 22;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 92) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 22;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 93) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 23;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 94) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 23;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 95) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 23;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 96) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 23;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+
+		if (br == 97) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 24;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 98) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 24;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 99) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 24;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 100) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 24;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 101) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 25;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 102) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 25;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 103) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 25;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 104) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 25;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 105) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 26;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 106) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 26;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 107) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 26;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 108) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 26;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 109) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 27;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 110) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 27;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 111) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 27;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 112) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 27;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 113) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 28;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 114) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 28;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 115) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 28;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 116) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 28;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 117) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 29;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 118) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 29;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 119) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 29;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 120) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 29;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+
+		if (br == 121) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 30;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 122) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 30;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 123) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 30;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 124) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 30;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 125) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 31;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 126) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 31;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 127) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 31;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 128) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 31;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 129) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 32;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 130) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 32;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 131) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 32;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 132) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 32;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 133) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 33;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 134) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 33;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 135) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 33;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 136) {
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 33;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 137) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 34;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 138) {
+			int N2 = 4;
+			char str2[]{ "4567" };
+			int strN2 = 1;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 34;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 139) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 34;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 140) {
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 34;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 141) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 35;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
+			}
+
+		}
+		if (br == 142) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 35;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 143) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 35;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 144) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 35;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 145) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 36;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 146) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 36;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 147) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 36;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 148) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 36;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 149) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 37;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 150) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 37;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 151) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 37;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 152) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 37;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 153) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 38;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 154) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 38;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 155) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 38;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 156) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 38;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 157) {
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 39;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 158) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 39;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 159) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 39;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 160) {
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 39;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 161) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 40;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 162) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 40;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 163) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 40;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 164) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 40;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 165) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 41;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 166) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 41;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 167) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 41;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 168) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 41;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 169) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 42;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 170) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 42;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 171) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 42;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 172) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 42;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 173) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 43;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 174) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 43;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 175) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 43;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 176) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 43;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 177) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 44;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 178) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 44;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 179) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 44;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 180) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 44;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 181) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 45;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 182) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 45;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 183) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 45;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 184) {
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 45;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 185) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 46;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 186) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 46;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 187) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 46;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 188) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 46;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 189) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 47;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 190) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 47;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 191) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 47;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 192) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 47;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 193) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 48;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 194) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 48;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 195) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 48;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 196) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 48;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 197) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 49;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 198) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 49;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 199) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 49;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 200) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 49;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 201) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 50;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 202) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 50;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 203) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 50;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 204) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 50;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 205) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 51;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 206) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 51;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 207) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 51;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 208) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 51;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 209) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 52;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 210) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 52;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 211) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 52;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 212) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 52;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 213) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 53;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 214) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 53;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 215) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 53;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 216) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 53;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 217) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 54;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 218) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 54;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 219) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 54;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 220) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 54;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 221) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 55;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 222) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 55;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 223) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 55;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 224) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 55;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 225) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 56;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 226) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 56;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 227) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 56;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 228) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 56;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 229) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 57;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 230) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 57;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 231) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 57;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 232) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 57;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 233) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 58;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 234) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 58;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 235) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 58;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 236) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 58;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 237) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 59;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 238) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 59;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 239) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 59;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 240) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 59;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+
+		if (br == 241) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 60;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 242) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 60;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 243) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 60;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+
+		}
+		if (br == 244) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 60;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 245) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 61;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 246) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 61;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 247) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 61;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 248) {
+
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 61;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 249) {
+
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 62;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 250) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 62;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 251) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 62;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Set(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 252) {
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 62;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 253) {
+			int N2 = 1;
+			char str2[]{ "0123" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 63;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 254) {
+			int N2 = 1;
+			char str2[]{ "4567" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 63;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 255) {
+			int N2 = 1;
+			char str2[]{ "89ab" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 63;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
+		if (br == 256) {
+			int N2 = 1;
+			char str2[]{ "cdef" };
+			int strN2 = 4;
+			char* pass2 = new char[N2 + 1];
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2];
+			}
+			pass2[N2] = 0;
+
+			int N = 63;
+			char str[]{ "0123456789abcdef" };
+			int strN = 16;
+			char* pass = new char[N + 1];
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN];
+			}
+			pass[N] = 0;
+			std::stringstream ss;
+			ss << pass2 << pass;
+			std::string input = ss.str();
+			char* cstr = &input[0];
+			key22.SetBase16(cstr);
+			this->rangeDiff3.Add(&key22);
+			key.Set(&rangeDiff3);
+
+			if (diz == 0) {
+				printf("\r (%d bit) ", key.GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
+			}
+		}
 	}
-	
 	if (rekey == 2) {
 
 		if (nbit == 0) {
@@ -1011,8 +10768,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 5) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -1144,8 +10901,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 9) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -1280,8 +11037,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 13) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -1417,8 +11174,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 17) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -1553,8 +11310,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 21) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -1690,8 +11447,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 25) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -1826,8 +11583,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 29) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -1962,8 +11719,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 33) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -2092,12 +11849,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit == 37) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -2192,6 +11952,7 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
 		if (nbit == 40) {
 
@@ -2225,12 +11986,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit == 41) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -2359,12 +12123,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit == 45) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -2493,12 +12260,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit == 49) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -2627,12 +12396,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit == 53) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -2761,12 +12532,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit == 57) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -2901,8 +12674,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 61) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -3031,12 +12804,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit == 65) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -3165,12 +12940,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit == 69) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -3299,12 +13076,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit == 73) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -3433,12 +13212,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit == 77) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -3567,12 +13349,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit == 81) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -3701,12 +13486,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit == 85) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -3835,12 +13622,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit == 89) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -3975,8 +13765,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 93) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -4111,8 +13901,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 97) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 33;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -4241,12 +14031,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit == 101) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -4375,12 +14168,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit == 105) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -4515,8 +14310,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 109) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -4652,8 +14447,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 113) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -4788,8 +14583,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 117) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -4924,8 +14719,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 121) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -5060,8 +14855,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 125) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -5196,8 +14991,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 129) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -5332,8 +15127,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 133) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -5469,8 +15264,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 137) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -5606,8 +15401,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 141) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -5742,8 +15537,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 145) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -5878,8 +15673,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 149) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -6015,8 +15810,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 153) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -6152,8 +15947,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 157) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -6282,12 +16077,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit == 161) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -6423,8 +16221,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 165) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -6560,8 +16358,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 169) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -6694,8 +16492,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 173) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -6831,8 +16629,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 177) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -6968,8 +16766,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 181) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -7104,8 +16902,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 185) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -7241,8 +17039,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 189) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -7378,8 +17176,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 193) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -7514,8 +17312,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 197) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -7651,8 +17449,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 201) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -7789,8 +17587,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 205) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -7926,8 +17724,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 209) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -8063,8 +17861,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 213) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -8201,8 +17999,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 217) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -8333,11 +18131,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			}
 
 		}
+
+
+
 		if (nbit == 221) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -8473,8 +18274,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 225) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -8609,8 +18410,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 229) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -8745,8 +18546,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 233) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -8880,8 +18681,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 237) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -9015,8 +18816,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 241) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -9151,8 +18952,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 245) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -9285,8 +19086,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 249) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -9419,8 +19220,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit == 253) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -9553,42 +19354,28 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 	}
 
 	if (rekey == 3) {
-
 		int N = nbit;
 		char str[]{ "0123456789abcdef" };
-		int strN = 16; // –∏–Ω–¥–µ–∫—Å –ø–æ—Å–ª–µ–¥–Ω–µ–≥–æ —ç–ª–µ–º–µ–Ω—Ç–∞ –≤ –º–∞—Å—Å–∏–≤–µ
-		//srand(time(NULL)); //–∏–Ω–∏—Ü–∏–∞–ª–∏–∑–∏—Ä—É–µ–º –≥–µ–Ω–µ—Ä–∞—Ç–æ—Ä —Å–ª—É—á–∞–π–Ω—ã—Ö —á–∏—Å–µ–ª
-		char* pass = new char[N + 1]; //–≤—ã–¥–µ–ª—è–µ–º –ø–∞–º—è—Ç—å –¥–ª—è —Å—Ç—Ä–æ–∫–∏ –ø–∞—Ä–æ–ª—è
+		int strN = 16; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
 		for (int i = 0; i < N; i++)
 		{
-			pass[i] = str[rand() % strN]; //–≤—Å—Ç–∞–≤–ª—è–µ–º —Å–ª—É—á–∞–π–Ω—ã–π —Å–∏–º–≤–æ–ª
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
 		}
-		pass[N] = 0; //–∑–∞–ø–∏—Å—ã–≤–∞–µ–º –≤ –∫–æ–Ω–µ—Ü —Å—Ç—Ä–æ–∫–∏ –ø—Ä–∏–∑–Ω–∞–∫ –∫–æ–Ω—Ü–∞ —Å—Ç—Ä–æ–∫–∏
-
-		int N2 = maxFound;
-		char str2[]{ "0123456789abcdef" };
-		int strN2 = 16; // –∏–Ω–¥–µ–∫—Å –ø–æ—Å–ª–µ–¥–Ω–µ–≥–æ —ç–ª–µ–º–µ–Ω—Ç–∞ –≤ –º–∞—Å—Å–∏–≤–µ
-		//srand(time(NULL)); //–∏–Ω–∏—Ü–∏–∞–ª–∏–∑–∏—Ä—É–µ–º –≥–µ–Ω–µ—Ä–∞—Ç–æ—Ä —Å–ª—É—á–∞–π–Ω—ã—Ö —á–∏—Å–µ–ª
-		char* pass2 = new char[N2 + 1]; //–≤—ã–¥–µ–ª—è–µ–º –ø–∞–º—è—Ç—å –¥–ª—è —Å—Ç—Ä–æ–∫–∏ –ø–∞—Ä–æ–ª—è
-		for (int i = 0; i < N2; i++)
-		{
-			pass2[i] = str2[rand() % strN2]; //–≤—Å—Ç–∞–≤–ª—è–µ–º —Å–ª—É—á–∞–π–Ω—ã–π —Å–∏–º–≤–æ–ª
-		}
-		pass2[N2] = 0; //–∑–∞–ø–∏—Å—ã–≤–∞–µ–º –≤ –∫–æ–Ω–µ—Ü —Å—Ç—Ä–æ–∫–∏ –ø—Ä–∏–∑–Ω–∞–∫ –∫–æ–Ω—Ü–∞ —Å—Ç—Ä–æ–∫–∏
-
-
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
 		std::stringstream ss;
-		ss << seed << pass << zez << pass2;
+		ss << seed << pass;
 		std::string input = ss.str();
-		//string nos = sha256(input);
 		char* cstr = &input[0];
 		key.SetBase16(cstr);
 		if (diz == 0) {
-			printf("\r [%s] ", input.c_str());
+			printf("\r (%d bit) ", key.GetBitLength());
 		}
 		if (diz == 1) {
-			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+			printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 		}
+
 
 	}
 
@@ -9723,8 +19510,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 5) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -9857,8 +19644,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 9) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -9993,8 +19780,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 13) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -10127,8 +19914,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 17) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -10263,8 +20050,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 21) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -10400,8 +20187,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 25) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -10536,8 +20323,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 29) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -10672,8 +20459,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 33) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -10809,8 +20596,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 37) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -10946,8 +20733,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 41) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -11083,8 +20870,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 45) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -11219,8 +21006,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 49) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -11353,8 +21140,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 53) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -11489,8 +21276,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 57) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -11625,8 +21412,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 61) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -11761,8 +21548,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 65) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -11897,8 +21684,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 69) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -12033,8 +21820,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 73) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -12167,8 +21954,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 77) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -12304,8 +22091,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 81) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -12440,8 +22227,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 85) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -12577,8 +22364,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 89) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -12713,8 +22500,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 93) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -12849,8 +22636,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 97) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -12986,8 +22773,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 101) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -13122,8 +22909,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 105) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -13258,8 +23045,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 109) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -13388,12 +23175,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit2 == 113) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -13528,8 +23318,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 117) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -13664,8 +23454,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 121) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -13800,8 +23590,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 125) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -13936,8 +23726,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 129) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -14072,8 +23862,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 133) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -14209,8 +23999,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 137) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -14346,8 +24136,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 141) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -14482,8 +24272,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 145) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -14618,8 +24408,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 149) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -14755,8 +24545,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 153) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -14892,8 +24682,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 157) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -15022,12 +24812,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit2 == 161) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -15156,12 +24949,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit2 == 165) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -15297,8 +25093,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 169) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -15431,8 +25227,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 173) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -15568,8 +25364,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 177) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -15705,8 +25501,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 181) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -15841,8 +25637,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 185) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -15978,8 +25774,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 189) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -16115,8 +25911,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 193) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -16251,8 +26047,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 197) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -16386,8 +26182,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 201) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -16520,8 +26316,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 205) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -16657,8 +26453,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 209) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -16794,8 +26590,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 213) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -16924,12 +26720,16 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
+
 		if (nbit2 == 217) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -17062,8 +26862,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 221) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -17192,12 +26992,15 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
+
 		if (nbit2 == 225) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -17326,12 +27129,14 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			if (diz == 1) {
 				printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
 			}
+
 		}
+
 		if (nbit2 == 229) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -17462,11 +27267,12 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 			}
 
 		}
+
 		if (nbit2 == 233) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -17600,8 +27406,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 237) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -17735,8 +27541,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 241) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -17871,8 +27677,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 245) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -18005,8 +27811,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 249) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -18139,8 +27945,8 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		if (nbit2 == 253) {
 
 			int N2 = 1;
-			char str2[]{ "123" };
-			int strN2 = 3;
+			char str2[]{ "0123" };
+			int strN2 = 4;
 
 			char* pass2 = new char[N2 + 1];
 			for (int i = 0; i < N2; i++)
@@ -18272,1451 +28078,10957 @@ void LostCoins::getCPUStartingKey(int thId, Int &key, Point &startP)
 		}
 	}
 	
-	if (rekey == 6) {
-		key.Rand(nbit);
-		if (diz == 0) {
-			printf("\r (%d bit) ", key.GetBitLength());
-		}
-		if (diz == 1) {
-			printf("\r (%d bit) [%s] ", key.GetBitLength(), key.GetBase16().c_str());
-		}
-	}
 	
 
+	
+	if (rekey == 5) {
+		int N = nbit;
+		char str[]{ "0123456789" };
+		int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 6) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 7) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 8) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz0123456789" };
+		int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 9) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+		int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 10) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" };
+		int strN = 52; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 11) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+		int strN = 62; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 12) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+		int strN = 93; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 13) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+		int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 14) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ" };
+		int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 15) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+		int strN = 66; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 16) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789" };
+		int strN = 76; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 17) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+		int strN = 107; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 18) {
+		int N = nbit;
+		char str[]{ "0123456789" };
+		int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 19) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 20) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 21) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz0123456789" };
+		int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 22) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+		int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 23) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" };
+		int strN = 52; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 24) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+		int strN = 62; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 25) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+		int strN = 92; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 26) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+		int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 27) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ" };
+		int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 28) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+		int strN = 66; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 29) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789" };
+		int strN = 76; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 30) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+		int strN = 106; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		std::stringstream ss;
+		ss << seed << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 31) {
+		int N = nbit;
+		char str[]{ "0123456789" };
+		int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 32) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 33) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 34) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz0123456789" };
+		int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 35) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+		int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 36) {
+		int N = nbit;
+		char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" };
+		int strN = 52; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 37) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+		int strN = 62; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 38) {
+		int N = nbit;
+		char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+		int strN = 93; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 39) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+		int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 40) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ" };
+		int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 41) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+		int strN = 66; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 42) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789" };
+		int strN = 76; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 43) {
+		setlocale(LC_ALL, "Russian");
+		int N = nbit;
+		char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+		int strN = 107; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		std::stringstream ss;
+		ss << seed << " " << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+	}
+
+	if (rekey == 44) {
+		int N = 2;
+		char str[]{ "0123456789" };
+		int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N2 = nbit;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N3 = 1;
+		char str3[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+		int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N3; i++)
+		{
+			pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << pass3 << pass2 << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 45) {
+		int N = 4;
+		char str[]{ "0123456789" };
+		int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N2 = nbit;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N3 = 1;
+		char str3[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+		int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N3; i++)
+		{
+			pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << pass3 << pass2 << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 46) {
+		int N = 6;
+		char str[]{ "0123456789" };
+		int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N2 = nbit;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N3 = 1;
+		char str3[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+		int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N3; i++)
+		{
+			pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << pass3 << pass2 << pass;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+
+	if (rekey == 47) {
+		int N2 = rand() % 7 + 3;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N4 = 3 + rand() % 6;
+		char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N4; i++)
+		{
+			pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << pass2 << " " << pass4;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 48) {
+		int N2 = 3 + rand() % 7;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		int N4 = 3 + rand() % 6;
+		char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N4; i++)
+		{
+			pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << seed << " " << pass2 << " " << pass4;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+
+	if (rekey == 49) {
+		int N = 3 + rand() % 3;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N1 = 3 + rand() % 3;
+		char str1[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN1 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass1 = new char[N1 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N1; i++)
+		{
+			pass1[i] = str1[rand() % strN1]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass1[N1] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N2 = 3 + rand() % 3;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N3 = 3 + rand() % 3;
+		char str3[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N3; i++)
+		{
+			pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N4 = 3 + rand() % 3;
+		char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N4; i++)
+		{
+			pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N5 = 3 + rand() % 3;
+		char str5[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN5 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass5 = new char[N5 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N5; i++)
+		{
+			pass5[i] = str5[rand() % strN5]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass5[N5] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N6 = 3 + rand() % 3;
+		char str6[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN6 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass6 = new char[N6 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N6; i++)
+		{
+			pass6[i] = str6[rand() % strN6]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass6[N6] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		int N7 = 3 + rand() % 3;
+		char str7[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN7 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass7 = new char[N7 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N7; i++)
+		{
+			pass7[i] = str7[rand() % strN7]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass7[N7] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N8 = 3 + rand() % 3;
+		char str8[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN8 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass8 = new char[N8 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N8; i++)
+		{
+			pass8[i] = str8[rand() % strN8]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass8[N8] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N9 = 3 + rand() % 3;
+		char str9[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN9 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass9 = new char[N9 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N9; i++)
+		{
+			pass9[i] = str9[rand() % strN9]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass9[N9] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N10 = 3 + rand() % 3;
+		char str10[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN10 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass10 = new char[N10 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N10; i++)
+		{
+			pass10[i] = str10[rand() % strN10]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass10[N10] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N11 = 3 + rand() % 3;
+		char str11[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN11 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass11 = new char[N11 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N11; i++)
+		{
+			pass11[i] = str11[rand() % strN11]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass11[N11] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << pass << " " << pass1 << " " << pass2 << " " << pass3 << " " << pass4 << " " << pass5 << " " << pass6 << " " << pass7 << " " << pass8 << " " << pass9 << " " << pass10 << " " << pass11;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+
+	if (rekey == 50) {
+		int N = 3 + rand() % 5;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N1 = 3 + rand() % 5;
+		char str1[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN1 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass1 = new char[N1 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N1; i++)
+		{
+			pass1[i] = str1[rand() % strN1]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass1[N1] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N2 = 3 + rand() % 5;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N3 = 3 + rand() % 5;
+		char str3[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N3; i++)
+		{
+			pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N4 = 3 + rand() % 5;
+		char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N4; i++)
+		{
+			pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N5 = 3 + rand() % 5;
+		char str5[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN5 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass5 = new char[N5 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N5; i++)
+		{
+			pass5[i] = str5[rand() % strN5]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass5[N5] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N6 = 3 + rand() % 5;
+		char str6[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN6 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass6 = new char[N6 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N6; i++)
+		{
+			pass6[i] = str6[rand() % strN6]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass6[N6] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N7 = 3 + rand() % 5;
+		char str7[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN7 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass7 = new char[N7 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N7; i++)
+		{
+			pass7[i] = str7[rand() % strN7]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass7[N7] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N8 = 3 + rand() % 5;
+		char str8[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN8 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass8 = new char[N8 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N8; i++)
+		{
+			pass8[i] = str8[rand() % strN8]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass8[N8] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N9 = 3 + rand() % 5;
+		char str9[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN9 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass9 = new char[N9 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N9; i++)
+		{
+			pass9[i] = str9[rand() % strN9]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass9[N9] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N10 = 3 + rand() % 5;
+		char str10[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN10 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass10 = new char[N10 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N10; i++)
+		{
+			pass10[i] = str10[rand() % strN10]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass10[N10] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N11 = 3 + rand() % 5;
+		char str11[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN11 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass11 = new char[N11 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N11; i++)
+		{
+			pass11[i] = str11[rand() % strN11]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass11[N11] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << pass << " " << pass1 << " " << pass2 << " " << pass3 << " " << pass4 << " " << pass5 << " " << pass6 << " " << pass7 << " " << pass8 << " " << pass9 << " " << pass10 << " " << pass11;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	if (rekey == 51) {
+		int N = 3 + rand() % 8;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N1 = 3 + rand() % 8;
+		char str1[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN1 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass1 = new char[N1 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N1; i++)
+		{
+			pass1[i] = str1[rand() % strN1]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass1[N1] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N2 = 3 + rand() % 8;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N3 = 3 + rand() % 8;
+		char str3[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N3; i++)
+		{
+			pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N4 = 3 + rand() % 8;
+		char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N4; i++)
+		{
+			pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N5 = 3 + rand() % 8;
+		char str5[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN5 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass5 = new char[N5 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N5; i++)
+		{
+			pass5[i] = str5[rand() % strN5]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass5[N5] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N6 = 3 + rand() % 8;
+		char str6[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN6 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass6 = new char[N6 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N6; i++)
+		{
+			pass6[i] = str6[rand() % strN6]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass6[N6] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N7 = 3 + rand() % 8;
+		char str7[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN7 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass7 = new char[N7 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N7; i++)
+		{
+			pass7[i] = str7[rand() % strN7]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass7[N7] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N8 = 3 + rand() % 8;
+		char str8[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN8 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass8 = new char[N8 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N8; i++)
+		{
+			pass8[i] = str8[rand() % strN8]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass8[N8] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N9 = 3 + rand() % 8;
+		char str9[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN9 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass9 = new char[N9 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N9; i++)
+		{
+			pass9[i] = str9[rand() % strN9]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass9[N9] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N10 = 3 + rand() % 8;
+		char str10[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN10 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass10 = new char[N10 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N10; i++)
+		{
+			pass10[i] = str10[rand() % strN10]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass10[N10] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N11 = 3 + rand() % 8;
+		char str11[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN11 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass11 = new char[N11 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N11; i++)
+		{
+			pass11[i] = str11[rand() % strN11]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass11[N11] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		std::stringstream ss;
+		ss << pass << " " << pass1 << " " << pass2 << " " << pass3 << " " << pass4 << " " << pass5 << " " << pass6 << " " << pass7 << " " << pass8 << " " << pass9 << " " << pass10 << " " << pass11;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+
+	if (rekey == 52) {
+		int N = 3 + rand() % 10;
+		char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N1 = 3 + rand() % 10;
+		char str1[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN1 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass1 = new char[N1 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N1; i++)
+		{
+			pass1[i] = str1[rand() % strN1]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass1[N1] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N2 = 3 + rand() % 10;
+		char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N2; i++)
+		{
+			pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N3 = 3 + rand() % 10;
+		char str3[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N3; i++)
+		{
+			pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N4 = 3 + rand() % 10;
+		char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N4; i++)
+		{
+			pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N5 = 3 + rand() % 10;
+		char str5[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN5 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass5 = new char[N5 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N5; i++)
+		{
+			pass5[i] = str5[rand() % strN5]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass5[N5] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N6 = 3 + rand() % 10;
+		char str6[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN6 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass6 = new char[N6 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N6; i++)
+		{
+			pass6[i] = str6[rand() % strN6]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass6[N6] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+		int N7 = 3 + rand() % 10;
+		char str7[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN7 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass7 = new char[N7 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N7; i++)
+		{
+			pass7[i] = str7[rand() % strN7]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass7[N7] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N8 = 3 + rand() % 10;
+		char str8[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN8 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass8 = new char[N8 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N8; i++)
+		{
+			pass8[i] = str8[rand() % strN8]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass8[N8] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N9 = 3 + rand() % 10;
+		char str9[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN9 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass9 = new char[N9 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N9; i++)
+		{
+			pass9[i] = str9[rand() % strN9]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass9[N9] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N10 = 3 + rand() % 10;
+		char str10[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN10 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass10 = new char[N10 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N10; i++)
+		{
+			pass10[i] = str10[rand() % strN10]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass10[N10] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+		int N11 = 3 + rand() % 10;
+		char str11[]{ "abcdefghijklmnopqrstuvwxyz" };
+		int strN11 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass11 = new char[N11 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N11; i++)
+		{
+			pass11[i] = str11[rand() % strN11]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass11[N11] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		std::stringstream ss;
+		ss << pass << " " << pass1 << " " << pass2 << " " << pass3 << " " << pass4 << " " << pass5 << " " << pass6 << " " << pass7 << " " << pass8 << " " << pass9 << " " << pass10 << " " << pass11;
+		std::string input = ss.str();
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", input.c_str());
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
+		}
+
+	}
+	
+	if (rekey == 53) {
+		string initial = seed;
+		string str = initial;
+		string last;
+		do {
+			last = str;
+			str = increment(last);
+			string input = str;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			key.SetBase16(cstr);
+
+			if (diz == 0) {
+				printf("\r [%s] ", str.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s]", str.c_str(), key.GetBase16().c_str());
+			}
+		} while (compare(last, str));
+	}
+	if (rekey == 54) {
+		int N = nbit;
+		char str[]{ "!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+		int strN = 31; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+		//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+		char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+		for (int i = 0; i < N; i++)
+		{
+			pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+		}
+		pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+		string input = pass;
+		string nos = sha256(input);
+		char* cstr = &nos[0];
+		key.SetBase16(cstr);
+		if (diz == 0) {
+			printf("\r [%s] ", pass);
+		}
+		if (diz == 1) {
+			printf("\r [%s] [%s] ", pass, key.GetBase16().c_str());
+		}
+
+	}
+
+	
 	Int km(&key);
 	km.Add((uint64_t)CPU_GRP_SIZE / 2);
 	startP = secp->ComputePublicKey(&km);
+
 }
 
-
-
-
-void LostCoins::FindKeyCPU(TH_PARAM* ph)
+void LostCoins::FindKeyCPU(TH_PARAM *ph)
 {
 
-	if (rekey == 0 || rekey == 7) {
-		if (rekey == 0){
-			int err = 0;
-			int thId = ph->threadId;
-			counters[thId] = 0;
+	// Global init
+	int thId = ph->threadId;
+	counters[thId] = 0;
 
-			IntGroup* grp = new IntGroup(CPU_GRP_SIZE / 1024 + 1);
+	// CPU Thread
+	IntGroup *grp = new IntGroup(CPU_GRP_SIZE / 2 + 1);
 
-			Int  key;
-			Point startP;
+	// Group Init
+	Int  key;
+	Point startP;
+	getCPUStartingKey(thId, key, startP);
+
+	Int dx[CPU_GRP_SIZE / 2 + 1];
+	Point pts[CPU_GRP_SIZE];
+
+	Int dy;
+	Int dyn;
+	Int _s;
+	Int _p;
+	Point pp;
+	Point pn;
+	grp->Set(dx);
+
+	ph->hasStarted = true;
+	ph->rekeyRequest = false;
+
+	while (!endOfSearch) {
+
+		if (ph->rekeyRequest) {
 			getCPUStartingKey(thId, key, startP);
-
-			Int dx[CPU_GRP_SIZE / 1024 + 1];
-			Point pts[CPU_GRP_SIZE];
-
-			Int dy;
-			Int dyn;
-			Int _s;
-			Int _p;
-			Point pp;
-			Point pn;
-			grp->Set(dx);
-
-			ph->hasStarted = true;
 			ph->rekeyRequest = false;
-			ifstream file77(seed);
-
-			if (thId == 0) {
-				string s77;
-				int bt = 0;
-				while (getline(file77, s77)) {
-					bt++;
-					if (bt < kusok + kusok) {
-						if (regex_search(s77, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = s77;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (nbit > 0) {
-								for (int nk = 0; nk < nbit; nk++) {
-									if (nk == 0) {
-										nos2 = sha256(input);
-										char* cstr = &nos2[0];
-										key.SetBase16(cstr);
-									}
-									else {
-										string nos3 = sha256(nos2);
-										char* cstr2 = &nos3[0];
-										key.SetBase16(cstr2);
-										nos2 = nos3;
-									}
-
-									if (diz == 0) {
-										printf("\r [%s] ", input.c_str());
-									}
-									if (diz == 1) {
-										printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-									}
-									Int km(&key);
-									km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-									startP = secp->ComputePublicKey(&km);
-
-									if (ph->rekeyRequest) {
-										getCPUStartingKey(thId, key, startP);
-										ph->rekeyRequest = false;
-									}
-
-									int i = 0;
-									dx[i].ModSub(&Gn[i].x, &startP.x);
-									dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-
-									grp->ModInv();
-
-									pts[1] = startP;
-									pn = startP;
-									dyn.Set(&Gn[i].y);
-									dyn.ModNeg();
-									dyn.ModSub(&pn.y);
-
-									_s.ModMulK1(&dyn, &dx[i]);
-									_p.ModSquareK1(&_s);
-									pn.x.ModNeg();
-									pn.x.ModAdd(&_p);
-									pn.x.ModSub(&Gn[i].x);
-									pn.y.ModSub(&Gn[i].x, &pn.x);
-									pn.y.ModMulK1(&_s);
-									pn.y.ModAdd(&Gn[i].y);
-
-									pts[0] = pn;
-
-									switch (searchMode) {
-									case SEARCH_COMPRESSED:
-										checkAddresses(true, key, i, pts[i]);
-										break;
-									case SEARCH_UNCOMPRESSED:
-										checkAddresses(false, key, i, pts[i]);
-										break;
-									case SEARCH_BOTH:
-										checkAddresses(true, key, i, pts[i]);
-										checkAddresses(false, key, i, pts[i]);
-										break;
-									}
-									counters[thId] += 1;
-									if (bt >= stope * nbit) {
-										int vsego = stope - err * nbit;
-										printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-										printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-										if (err > 100) {
-											printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-										}
-										exit(1);
-									}
-								}
-							}
-							else {
-								if (diz == 0) {
-									printf("\r [%s] ", input.c_str());
-								}
-								if (diz == 1) {
-									printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-								}
-								Int km(&key);
-								km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-								startP = secp->ComputePublicKey(&km);
-
-								if (ph->rekeyRequest) {
-									getCPUStartingKey(thId, key, startP);
-									ph->rekeyRequest = false;
-								}
-
-								int i = 0;
-								dx[i].ModSub(&Gn[i].x, &startP.x);
-								dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-
-								grp->ModInv();
-
-								pts[1] = startP;
-								pn = startP;
-								dyn.Set(&Gn[i].y);
-								dyn.ModNeg();
-								dyn.ModSub(&pn.y);
-
-								_s.ModMulK1(&dyn, &dx[i]);
-								_p.ModSquareK1(&_s);
-								pn.x.ModNeg();
-								pn.x.ModAdd(&_p);
-								pn.x.ModSub(&Gn[i].x);
-								pn.y.ModSub(&Gn[i].x, &pn.x);
-								pn.y.ModMulK1(&_s);
-								pn.y.ModAdd(&Gn[i].y);
-
-								pts[0] = pn;
-
-								switch (searchMode) {
-								case SEARCH_COMPRESSED:
-									checkAddresses(true, key, i, pts[i]);
-									break;
-								case SEARCH_UNCOMPRESSED:
-									checkAddresses(false, key, i, pts[i]);
-									break;
-								case SEARCH_BOTH:
-									checkAddresses(true, key, i, pts[i]);
-									checkAddresses(false, key, i, pts[i]);
-									break;
-								}
-								counters[thId] += 1;
-								if (bt >= stope) {
-									int vsego = stope - err;
-									printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-									printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-									if (err > 100) {
-										printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-									}
-									exit(1);
-								}
-							}
-						}
-					}
-				}
-			}
-			if (thId == 1) {
-				string s78;
-				int bt1 = 0;
-				while (getline(file77, s78)) {
-					bt1++;
-					if (bt1 > kusok) {
-						if (regex_search(s78, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = s78;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt1 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 2) {
-				string s79;
-				int bt2 = 0;
-				while (getline(file77, s79)) {
-					bt2++;
-					if (bt2 > kusok + kusok) {
-						if (regex_search(s79, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = s79;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt2 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 3) {
-				string sk8;
-				int bt3 = 0;
-				while (getline(file77, sk8)) {
-					bt3++;
-					if (bt3 > kusok * 3) {
-						if (regex_search(sk8, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = sk8;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt3 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 4) {
-				string sk9;
-				int bt4 = 0;
-				while (getline(file77, sk9)) {
-					bt4++;
-					if (bt4 > kusok * 4) {
-						if (regex_search(sk9, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = sk9;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt4 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 5) {
-				string sr7;
-				int bt5 = 0;
-				while (getline(file77, sr7)) {
-					bt5++;
-					if (bt5 > kusok * 5) {
-						if (regex_search(sr7, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = sr7;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt5 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 6) {
-				string tr6;
-				int bt6 = 0;
-				while (getline(file77, tr6)) {
-					bt6++;
-					if (bt6 > kusok * 6) {
-						if (regex_search(tr6, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = tr6;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt6 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 7) {
-				string tr7;
-				int bt7 = 0;
-				while (getline(file77, tr7)) {
-					bt7++;
-					if (bt7 > kusok * 7) {
-						if (regex_search(tr7, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = tr7;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt7 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 8) {
-				string tr8;
-				int bt8 = 0;
-				while (getline(file77, tr8)) {
-					bt8++;
-					if (bt8 > kusok * 8) {
-						if (regex_search(tr8, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = tr8;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt8 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 9) {
-				string tr9;
-				int bt9 = 0;
-				while (getline(file77, tr9)) {
-					bt9++;
-					if (bt9 > kusok * 9) {
-						if (regex_search(tr9, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = tr9;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (bt9 >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			if (thId == 10) {
-				string gtr9;
-				int btt = 0;
-				while (getline(file77, gtr9)) {
-					btt++;
-					if (btt > kusok * 10) {
-						if (regex_search(gtr9, regex("[^–ê-–Ø–∞-—èA-Za-z0-9—ë–Å—å–™–¨—ä `~!@#$%&*()-_=+{}|;:'<>,./?\r\n]"))) {
-							err += 1;
-						}
-						else {
-							string input = gtr9;
-							if (zez == "keys") {
-								char* cstr = &input[0];
-								key.SetBase16(cstr);
-							}
-							else {
-								string nos = sha256(input);
-								char* cstr = &nos[0];
-								key.SetBase16(cstr);
-							}
-
-							if (diz == 0) {
-								printf("\r [%s] ", input.c_str());
-							}
-							if (diz == 1) {
-								printf("\r [%s] [%s] ", input.c_str(), key.GetBase16().c_str());
-							}
-							Int km(&key);
-							km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-							startP = secp->ComputePublicKey(&km);
-
-							if (ph->rekeyRequest) {
-								getCPUStartingKey(thId, key, startP);
-								ph->rekeyRequest = false;
-							}
-
-							int i = 0;
-							dx[i].ModSub(&Gn[i].x, &startP.x);
-							dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-							grp->ModInv();
-
-							pts[1] = startP;
-							pn = startP;
-							dyn.Set(&Gn[i].y);
-							dyn.ModNeg();
-							dyn.ModSub(&pn.y);
-							_s.ModMulK1(&dyn, &dx[i]);
-							_p.ModSquareK1(&_s);
-							pn.x.ModNeg();
-							pn.x.ModAdd(&_p);
-							pn.x.ModSub(&Gn[i].x);
-							pn.y.ModSub(&Gn[i].x, &pn.x);
-							pn.y.ModMulK1(&_s);
-							pn.y.ModAdd(&Gn[i].y);
-							pts[0] = pn;
-
-							switch (searchMode) {
-							case SEARCH_COMPRESSED:
-								checkAddresses(true, key, i, pts[i]);
-								break;
-							case SEARCH_UNCOMPRESSED:
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							case SEARCH_BOTH:
-								checkAddresses(true, key, i, pts[i]);
-								checkAddresses(false, key, i, pts[i]);
-								break;
-							}
-							counters[thId] += 1;
-							if (btt >= stope) {
-								int vsego = stope - err;
-								printf("\n  Search is Finish! (%d) passphrases checked from total (%d). Found: (%d) \n", vsego, stope, nbFoundKey);
-								printf("  Skipped passphrases with incorrect letters, characters (%d) \n", err);
-								if (err > 100) {
-									printf("  Check the file %s for incorrect characters, remove the garbage from %d passphrases and try again.  \n  Help by link https://github.com/phrutis/LostCoins/issues/16 \n", seed.c_str(), err);
-								}
-								exit(1);
-							}
-						}
-					}
-				}
-			}
-			//ph->isRunning = false;
-
 		}
-		else {
-		  int err = 0;
-		  int thId = ph->threadId;
-		  counters[thId] = 0;
 
-		  IntGroup* grp = new IntGroup(CPU_GRP_SIZE / 1024 + 1);
+		// Fill group
+		int i;
+		int hLength = (CPU_GRP_SIZE / 2 - 1);
 
-		  Int  key;
-		  Point startP;
-		  getCPUStartingKey(thId, key, startP);
+		for (i = 0; i < hLength; i++) {
+			dx[i].ModSub(&Gn[i].x, &startP.x);
+		}
+		dx[i].ModSub(&Gn[i].x, &startP.x);  // For the first point
+		dx[i + 1].ModSub(&_2Gn.x, &startP.x); // For the next center point
 
-		  Int dx[CPU_GRP_SIZE / 1024 + 1];
-		  Point pts[CPU_GRP_SIZE];
+		// Grouped ModInv
+		grp->ModInv();
 
-		  Int dy;
-		  Int dyn;
-		  Int _s;
-		  Int _p;
-		  Point pp;
-		  Point pn;
-		  grp->Set(dx);
+		// We use the fact that P + i*G and P - i*G has the same deltax, so the same inverse
+		// We compute key in the positive and negative way from the center of the group
 
-		  ph->hasStarted = true;
-		  ph->rekeyRequest = false;
-		  ifstream file77(seed);
+		// center point
+		pts[CPU_GRP_SIZE / 2] = startP;
 
-		   while (1 < 2) {
-	
-			  int N = 64;
-			  char str[]{ "0123456789abcdef" };
-			  int strN = 16;
-			  char* pass = new char[N + 1];
-			  for (int i = 0; i < N; i++)
-			  {
-				  pass[i] = str[rand() % strN];
-			  }
-			  pass[N] = 0;
-			  std::stringstream ss;
-			  ss << pass;
-			  std::string input = ss.str();
-			  char* cstr = &input[0];
-			  key.SetBase16(cstr);
-			  delete [] pass;
+		for (i = 0; i < hLength && !endOfSearch; i++) {
 
-			  if (diz == 0) {
-				  printf("\r (%d bit) ", key.GetBitLength());
-			  }
-			  if (diz == 1) {
-				  printf("\r [%s] (%d bit) ", key.GetBase16().c_str(), key.GetBitLength());
-			  }
-			  Int km(&key);
-			  km.Add((uint64_t)CPU_GRP_SIZE / 1024);
-			  startP = secp->ComputePublicKey(&km);
-
-			  if (ph->rekeyRequest) {
-				  getCPUStartingKey(thId, key, startP);
-				  ph->rekeyRequest = false;
-			  }
-
-			  int i = 0;
-			  dx[i].ModSub(&Gn[i].x, &startP.x);
-			  dx[i + 1].ModSub(&_2Gn.x, &startP.x);
-			  grp->ModInv();
-
-			  pts[1] = startP;
-			  pn = startP;
-			  dyn.Set(&Gn[i].y);
-			  dyn.ModNeg();
-			  dyn.ModSub(&pn.y);
-			  _s.ModMulK1(&dyn, &dx[i]);
-			  _p.ModSquareK1(&_s);
-			  pn.x.ModNeg();
-			  pn.x.ModAdd(&_p);
-			  pn.x.ModSub(&Gn[i].x);
-			  pn.y.ModSub(&Gn[i].x, &pn.x);
-			  pn.y.ModMulK1(&_s);
-			  pn.y.ModAdd(&Gn[i].y);
-			  pts[0] = pn;
-
-			  switch (searchMode) {
-			  case SEARCH_COMPRESSED:
-				  checkAddresses(true, key, i, pts[i]);
-				  break;
-			  case SEARCH_UNCOMPRESSED:
-				  checkAddresses(false, key, i, pts[i]);
-				  break;
-			  case SEARCH_BOTH:
-				  checkAddresses(true, key, i, pts[i]);
-				  checkAddresses(false, key, i, pts[i]);
-				  break;
-			  }
-			  counters[thId] += 1;
-		   }
-        }
-	}
-	else
-	{
-
-		// Global init
-		int thId = ph->threadId;
-		counters[thId] = 0;
-
-		// CPU Thread
-		IntGroup* grp = new IntGroup(CPU_GRP_SIZE / 2 + 1);
-
-		// Group Init
-		Int  key;
-		Point startP;
-		getCPUStartingKey(thId, key, startP);
-
-		Int dx[CPU_GRP_SIZE / 2 + 1];
-		Point pts[CPU_GRP_SIZE];
-
-		Int dy;
-		Int dyn;
-		Int _s;
-		Int _p;
-		Point pp;
-		Point pn;
-		grp->Set(dx);
-
-		ph->hasStarted = true;
-		ph->rekeyRequest = false;
-
-		while (!endOfSearch) {
-
-			if (ph->rekeyRequest) {
-				getCPUStartingKey(thId, key, startP);
-				ph->rekeyRequest = false;
-			}
-
-			// Fill group
-			int i;
-			int hLength = (CPU_GRP_SIZE / 2 - 1);
-
-			for (i = 0; i < hLength; i++) {
-				dx[i].ModSub(&Gn[i].x, &startP.x);
-			}
-			dx[i].ModSub(&Gn[i].x, &startP.x);  // For the first point
-			dx[i + 1].ModSub(&_2Gn.x, &startP.x); // For the next center point
-
-			// Grouped ModInv
-			grp->ModInv();
-
-			// We use the fact that P + i*G and P - i*G has the same deltax, so the same inverse
-			// We compute key in the positive and negative way from the center of the group
-
-			// center point
-			pts[CPU_GRP_SIZE / 2] = startP;
-
-			for (i = 0; i < hLength && !endOfSearch; i++) {
-
-				pp = startP;
-				pn = startP;
-
-				// P = startP + i*G
-				dy.ModSub(&Gn[i].y, &pp.y);
-
-				_s.ModMulK1(&dy, &dx[i]);       // s = (p2.y-p1.y)*inverse(p2.x-p1.x);
-				_p.ModSquareK1(&_s);            // _p = pow2(s)
-
-				pp.x.ModNeg();
-				pp.x.ModAdd(&_p);
-				pp.x.ModSub(&Gn[i].x);           // rx = pow2(s) - p1.x - p2.x;
-
-				pp.y.ModSub(&Gn[i].x, &pp.x);
-				pp.y.ModMulK1(&_s);
-				pp.y.ModSub(&Gn[i].y);           // ry = - p2.y - s*(ret.x-p2.x);
-
-				// P = startP - i*G  , if (x,y) = i*G then (x,-y) = -i*G
-				dyn.Set(&Gn[i].y);
-				dyn.ModNeg();
-				dyn.ModSub(&pn.y);
-
-				_s.ModMulK1(&dyn, &dx[i]);      // s = (p2.y-p1.y)*inverse(p2.x-p1.x);
-				_p.ModSquareK1(&_s);            // _p = pow2(s)
-
-				pn.x.ModNeg();
-				pn.x.ModAdd(&_p);
-				pn.x.ModSub(&Gn[i].x);          // rx = pow2(s) - p1.x - p2.x;
-
-				pn.y.ModSub(&Gn[i].x, &pn.x);
-				pn.y.ModMulK1(&_s);
-				pn.y.ModAdd(&Gn[i].y);          // ry = - p2.y - s*(ret.x-p2.x);
-
-				pts[CPU_GRP_SIZE / 2 + (i + 1)] = pp;
-				pts[CPU_GRP_SIZE / 2 - (i + 1)] = pn;
-
-			}
-
-			// First point (startP - (GRP_SZIE/2)*G)
+			pp = startP;
 			pn = startP;
+
+			// P = startP + i*G
+			dy.ModSub(&Gn[i].y, &pp.y);
+
+			_s.ModMulK1(&dy, &dx[i]);       // s = (p2.y-p1.y)*inverse(p2.x-p1.x);
+			_p.ModSquareK1(&_s);            // _p = pow2(s)
+
+			pp.x.ModNeg();
+			pp.x.ModAdd(&_p);
+			pp.x.ModSub(&Gn[i].x);           // rx = pow2(s) - p1.x - p2.x;
+
+			pp.y.ModSub(&Gn[i].x, &pp.x);
+			pp.y.ModMulK1(&_s);
+			pp.y.ModSub(&Gn[i].y);           // ry = - p2.y - s*(ret.x-p2.x);
+
+			// P = startP - i*G  , if (x,y) = i*G then (x,-y) = -i*G
 			dyn.Set(&Gn[i].y);
 			dyn.ModNeg();
 			dyn.ModSub(&pn.y);
 
-			_s.ModMulK1(&dyn, &dx[i]);
-			_p.ModSquareK1(&_s);
+			_s.ModMulK1(&dyn, &dx[i]);      // s = (p2.y-p1.y)*inverse(p2.x-p1.x);
+			_p.ModSquareK1(&_s);            // _p = pow2(s)
 
 			pn.x.ModNeg();
 			pn.x.ModAdd(&_p);
-			pn.x.ModSub(&Gn[i].x);
+			pn.x.ModSub(&Gn[i].x);          // rx = pow2(s) - p1.x - p2.x;
 
 			pn.y.ModSub(&Gn[i].x, &pn.x);
 			pn.y.ModMulK1(&_s);
-			pn.y.ModAdd(&Gn[i].y);
+			pn.y.ModAdd(&Gn[i].y);          // ry = - p2.y - s*(ret.x-p2.x);
 
-			pts[0] = pn;
+			pts[CPU_GRP_SIZE / 2 + (i + 1)] = pp;
+			pts[CPU_GRP_SIZE / 2 - (i + 1)] = pn;
 
-			// Next start point (startP + GRP_SIZE*G)
-			pp = startP;
-			dy.ModSub(&_2Gn.y, &pp.y);
-
-			_s.ModMulK1(&dy, &dx[i + 1]);
-			_p.ModSquareK1(&_s);
-
-			pp.x.ModNeg();
-			pp.x.ModAdd(&_p);
-			pp.x.ModSub(&_2Gn.x);
-
-			pp.y.ModSub(&_2Gn.x, &pp.x);
-			pp.y.ModMulK1(&_s);
-			pp.y.ModSub(&_2Gn.y);
-			startP = pp;
-
-			// Check addresses
-			if (useSSE) {
-
-				for (int i = 0; i < CPU_GRP_SIZE && !endOfSearch; i += 4) {
-
-					switch (searchMode) {
-					case SEARCH_COMPRESSED:
-						checkAddressesSSE(true, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
-						break;
-					case SEARCH_UNCOMPRESSED:
-						checkAddressesSSE(false, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
-						break;
-					case SEARCH_BOTH:
-						checkAddressesSSE(true, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
-						checkAddressesSSE(false, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
-						break;
-					}
-				}
-			}
-			else {
-
-				for (int i = 0; i < CPU_GRP_SIZE && !endOfSearch; i++) {
-
-					switch (searchMode) {
-					case SEARCH_COMPRESSED:
-						checkAddresses(true, key, i, pts[i]);
-						break;
-					case SEARCH_UNCOMPRESSED:
-						checkAddresses(false, key, i, pts[i]);
-						break;
-					case SEARCH_BOTH:
-						checkAddresses(true, key, i, pts[i]);
-						checkAddresses(false, key, i, pts[i]);
-						break;
-					}
-				}
-			}
-
-			key.Add((uint64_t)CPU_GRP_SIZE);
-			counters[thId] += 6 * CPU_GRP_SIZE; // Point + endo #1 + endo #2 + Symetric point + endo #1 + endo #2
 		}
-		ph->isRunning = false;
+
+		// First point (startP - (GRP_SZIE/2)*G)
+		pn = startP;
+		dyn.Set(&Gn[i].y);
+		dyn.ModNeg();
+		dyn.ModSub(&pn.y);
+
+		_s.ModMulK1(&dyn, &dx[i]);
+		_p.ModSquareK1(&_s);
+
+		pn.x.ModNeg();
+		pn.x.ModAdd(&_p);
+		pn.x.ModSub(&Gn[i].x);
+
+		pn.y.ModSub(&Gn[i].x, &pn.x);
+		pn.y.ModMulK1(&_s);
+		pn.y.ModAdd(&Gn[i].y);
+
+		pts[0] = pn;
+
+		// Next start point (startP + GRP_SIZE*G)
+		pp = startP;
+		dy.ModSub(&_2Gn.y, &pp.y);
+
+		_s.ModMulK1(&dy, &dx[i + 1]);
+		_p.ModSquareK1(&_s);
+
+		pp.x.ModNeg();
+		pp.x.ModAdd(&_p);
+		pp.x.ModSub(&_2Gn.x);
+
+		pp.y.ModSub(&_2Gn.x, &pp.x);
+		pp.y.ModMulK1(&_s);
+		pp.y.ModSub(&_2Gn.y);
+		startP = pp;
+
+		// Check addresses
+		if (useSSE) {
+
+			for (int i = 0; i < CPU_GRP_SIZE && !endOfSearch; i += 4) {
+
+				switch (searchMode) {
+				case SEARCH_COMPRESSED:
+					checkAddressesSSE(true, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
+					break;
+				case SEARCH_UNCOMPRESSED:
+					checkAddressesSSE(false, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
+					break;
+				case SEARCH_BOTH:
+					checkAddressesSSE(true, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
+					checkAddressesSSE(false, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
+					break;
+				}
+			}
+		}
+		else {
+
+			for (int i = 0; i < CPU_GRP_SIZE && !endOfSearch; i++) {
+
+				switch (searchMode) {
+				case SEARCH_COMPRESSED:
+					checkAddresses(true, key, i, pts[i]);
+					break;
+				case SEARCH_UNCOMPRESSED:
+					checkAddresses(false, key, i, pts[i]);
+					break;
+				case SEARCH_BOTH:
+					checkAddresses(true, key, i, pts[i]);
+					checkAddresses(false, key, i, pts[i]);
+					break;
+				}
+			}
+		}
+
+		key.Add((uint64_t)CPU_GRP_SIZE);
+		counters[thId] += 6 * CPU_GRP_SIZE; // Point + endo #1 + endo #2 + Symetric point + endo #1 + endo #2
 	}
-
-
+	ph->isRunning = false;
 }
 
 // ----------------------------------------------------------------------------
 
 void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *keys, Point *p)
 {
-   if (rekey == 1) {
-
-	   char* cstra27 = cstra27 + 1;
-	   int gaza877 = (int)cstra27;
-	   
-	   if (gaza877 == 1) {
-
-		   char* gyg = &seed[0];
-		   char* fun = &zez[0];
-		   this->rangeStart1.SetBase16(gyg);
-		   this->rangeEnd1.SetBase16(fun);
-		   if (seed == "") {
-			   this->rangeStart1.Add(1);
-		   }
-
-		   if (zez == "") {
-			   this->rangeEnd1.Add(10000000000000000);
-		   }
-		   Int tRangeDiff;
-		   Int tRangeStart2(&rangeStart1);
-		   Int tRangeEnd2(&rangeStart1);
-		   Int razn;
-		   Int tThreads;
-		   tThreads.SetInt32(nbThread);
-		   tRangeDiff.Set(&rangeEnd1);
-		   tRangeDiff.Sub(&rangeStart1);
-		   razn.Set(&tRangeDiff);
-		   tRangeDiff.Div(&tThreads);
-		   this->rangeDiff.Set(&tRangeDiff);
-		  
-		   if (maxFound == 777) {
-			   ifstream file777("LostCoins-Continue.bat");
-			   string s777;
-			   string kogda;
-			   for (int i = 0; i < 5; i++) {
-				   getline(file777, s777);
-				   if (i == 0) {
-					   string kogda = s777;
-					   printf("  Rotor       : Continuing search from BAT file. Checkpoint %s \n\n", kogda.c_str());
-				   }
-				   if (i == 4) {
-					   string streek = s777;
-					   std::istringstream iss(streek);
-					   iss >> value777;
-				   }
-			   }
-			   uint64_t nextt;
-			   nextt = value777 / 65535;
-			   tRangeStart2.Add(nextt);
-			   Int passe;
-			   passe.Add(nextt);
-			   printf("  Rotor       : Divide the range %s into %d threads, add the passed hex %s to each Thread, for fast parallel search \n", razn.GetBase16().c_str(), nbThread, passe.GetBase16().c_str());
-
-			   for (int i = 0; i < nbThread; i++) {
-
-				   keys[i].Set(&tRangeStart2);
-				   if (i == 0) {
-					   printf("  Thread 00000: %064s ->", keys[i].GetBase16().c_str());
-				   }
-				   tRangeStart2.Add(&tRangeDiff);
-
-				   Int k(keys + i);
-				   k.Add((uint64_t)(groupSize / 2));
-				   p[i] = secp->ComputePublicKey(&k);
-				   Int dobb;
-				   dobb.Set(&tRangeStart2);
-				   dobb.Add(&tRangeDiff);
-				   if (i == 0) {
-					   printf(" %064s \n", dobb.GetBase16().c_str());
-				   }
-				   if (i == 1) {
-					   printf("  Thread 00001: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-				   if (i == 2) {
-					   printf("  Thread 00002: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-				   if (i == 3) {
-					   printf("  Thread 00003: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-					   printf("          ... : \n");
-				   }
-				   if (i == 65533) {
-					   printf("  Thread 65533: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-				   if (i == 65534) {
-					   printf("  Thread 65534: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-				   if (i == 65535) {
-					   printf("  Thread 65535: %064s -> %064s \n\n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-			   } 
-		   }
-		   else
-		   {
-			   printf("  Divide the range %s into %d threads  for fast parallel search \n", razn.GetBase16().c_str(), nbThread);
-			   for (int i = 0; i < nbThread; i++) {
-
-				   keys[i].Set(&tRangeStart2);
-				   if (i == 0) {
-					   printf("  Thread 00000: %064s ->", keys[i].GetBase16().c_str());
-				   }
-				   tRangeStart2.Add(&tRangeDiff);
-
-				   Int k(keys + i);
-				   k.Add((uint64_t)(groupSize / 2));
-				   p[i] = secp->ComputePublicKey(&k);
-				   Int dobb;
-				   dobb.Set(&tRangeStart2);
-				   dobb.Add(&tRangeDiff);
-				   if (i == 0) {
-					   printf(" %064s \n", dobb.GetBase16().c_str());
-				   }
-				   if (i == 1) {
-					   printf("  Thread 00001: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-				   if (i == 2) {
-					   printf("  Thread 00002: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-				   if (i == 3) {
-					   printf("  Thread 00003: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-					   printf("          ... : \n");
-				   }
-				   if (i == 65533) {
-					   printf("  Thread 65533: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-				   if (i == 65534) {
-					   printf("  Thread 65534: %064s -> %064s \n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-				   if (i == 65535) {
-					   printf("  Thread 65535: %064s -> %064s \n\n", tRangeStart2.GetBase16().c_str(), dobb.GetBase16().c_str());
-				   }
-			   }
-			   
-		   }
-	   }
-   }
-   else
-   {
-   
-   
-	 for (int i = 0; i < nbThread; i++) {
+	
+	for (int i = 0; i < nbThread; i++) {
 		
+		if (rekey == 0) {
+			keys[i].Rand(nbit);
+			if (diz == 0) {
+				printf("\r (%d bit) ", keys[i].GetBitLength());
+			}
+			if (diz == 1) {
+				printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+			}
+		}
+		if (rekey == 1) {
+
+			char* gyg = &seed[0];
+
+			char* fun = &zez[0];
+			this->rangeStart1.SetBase16(gyg);
+			this->rangeEnd1.SetBase16(fun);
+
+
+
+			this->rangeDiff2.Set(&this->rangeEnd1);
+			this->rangeDiff2.Sub(&this->rangeStart1);
+
+			this->rangeDiff3.Set(&this->rangeStart1);
+
+
+			int tuk = rangeDiff2.GetBitLength();
+			int br = 1 + rand() % tuk;
+
+			if (br == 1) {
+				int N = 1;
+
+				char str[]{ "0123" };
+				int strN = 4;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 2) {
+				int N = 1;
+				char str[]{ "4567" };
+				int strN = 4;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+
+				std::stringstream ss;
+				ss << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 3) {
+				int N = 1;
+
+				char str[]{ "89ab" };
+				int strN = 4;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 4) {
+				int N = 1;
+				char str[]{ "cdef" };
+				int strN = 4;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+
+				std::stringstream ss;
+				ss << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 5) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 1;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 6) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 1;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 7) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+				int N = 1;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 8) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 1;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 9) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 2;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 10) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 2;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 11) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 2;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 12) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 2;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 13) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 3;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 14) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 3;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 15) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 3;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 16) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 3;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 17) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 4;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 18) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 4;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 19) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 4;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 20) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 4;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 21) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 5;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 22) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 5;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 23) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 5;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 24) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 5;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 25) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 6;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 26) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 6;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 27) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 6;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 28) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 6;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 29) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 7;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 30) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 7;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 31) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 7;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 32) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 7;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 33) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 8;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 34) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 8;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 35) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 8;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 36) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 8;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 37) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 9;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 38) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 9;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 39) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 9;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 40) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 9;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 41) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 10;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 42) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 10;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 43) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 10;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 44) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 10;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 45) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 11;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 46) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 11;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 47) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 11;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 48) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 11;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+
+			if (br == 49) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 12;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 50) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 12;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 51) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 12;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 52) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 12;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 53) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 13;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 54) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 13;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 55) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 13;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 56) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 13;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 57) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 14;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 58) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 14;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 59) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 14;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 60) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 14;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 61) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 15;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 62) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 15;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 63) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 15;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 64) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 15;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 65) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 16;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 66) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 16;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 67) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 16;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 68) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 16;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 69) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 17;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 70) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 17;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 71) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 17;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 72) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 17;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 73) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 18;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 74) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 18;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 75) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 18;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 76) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 18;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 77) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 19;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 78) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 19;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 79) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 19;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 80) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 19;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 81) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 20;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 82) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 20;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 83) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 20;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 84) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 20;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 85) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 21;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 86) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 21;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 87) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 21;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 88) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 21;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 89) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 22;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 90) {
+				int N2 = 4;
+				char str2[]{ "4567" };
+				int strN2 = 1;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 22;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 91) {
+				int N2 = 4;
+				char str2[]{ "89ab" };
+				int strN2 = 1;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 22;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 92) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 22;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 93) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 23;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 94) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 23;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 95) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 23;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 96) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 23;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+
+			if (br == 97) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 24;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 98) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 24;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 99) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 24;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 100) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 24;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 101) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 25;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 102) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 25;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 103) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 25;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 104) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 25;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 105) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 26;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 106) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 26;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 107) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 26;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 108) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 26;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 109) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 27;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 110) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 27;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 111) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 27;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 112) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 27;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 113) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 28;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 114) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 28;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 115) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 28;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 116) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 28;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 117) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 29;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 118) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 29;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 119) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 29;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 120) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 29;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 121) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 30;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 122) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 30;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 123) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 30;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 124) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 30;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 125) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 31;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 126) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 31;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 127) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 31;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 128) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 31;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 129) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 32;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 130) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 32;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 131) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 32;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 132) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 32;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 133) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 33;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 134) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 33;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 135) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 33;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 136) {
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 33;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 137) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 34;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 138) {
+				int N2 = 4;
+				char str2[]{ "4567" };
+				int strN2 = 1;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 34;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 139) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 34;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 140) {
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 34;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 141) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 35;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 142) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 35;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 143) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 35;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 144) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 35;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 145) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 36;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 146) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 36;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 147) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 36;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 148) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 36;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 149) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 37;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 150) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 37;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 151) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 37;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 152) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 37;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 153) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 38;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 154) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 38;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 155) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 38;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 156) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 38;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 157) {
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 39;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 158) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 39;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 159) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 39;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 160) {
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 39;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 161) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 40;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 162) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 40;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 163) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 40;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 164) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 40;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 165) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 41;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 166) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 41;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 167) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 41;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 168) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 41;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 169) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 42;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+			if (br == 170) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 42;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 171) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 42;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 172) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 42;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 173) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 43;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 174) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 43;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 175) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 43;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 176) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 43;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 177) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 44;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 178) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 44;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 179) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 44;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 180) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 44;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 181) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 45;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 182) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 45;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 183) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 45;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 184) {
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 45;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 185) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 46;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 186) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 46;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 187) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 46;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 188) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 46;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 189) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 47;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 190) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 47;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 191) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 47;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 192) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 47;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 193) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 48;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 194) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 48;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 195) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 48;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 196) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 48;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 197) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 49;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 198) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 49;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 199) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 49;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 200) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 49;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 201) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 50;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 202) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 50;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 203) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 50;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 204) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 50;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 205) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 51;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 206) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 51;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 207) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 51;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 208) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 51;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 209) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 52;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 210) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 52;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 211) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 52;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 212) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 52;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 213) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 53;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 214) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 53;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 215) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 53;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 216) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 53;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 217) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 54;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 218) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 54;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 219) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 54;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 220) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 54;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 221) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 55;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 222) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 55;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 223) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 55;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 224) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 55;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 225) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 56;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 226) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 56;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 227) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 56;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 228) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 56;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 229) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 57;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 230) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 57;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 231) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 57;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 232) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 57;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 233) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 58;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 234) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 58;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 235) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 58;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 236) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 58;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 237) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 59;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 238) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 59;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 239) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 59;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 240) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 59;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 241) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 60;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 242) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 60;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 243) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 60;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 244) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 60;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 245) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 61;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 246) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 61;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 247) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 61;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 248) {
+
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 61;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 249) {
+
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 62;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 250) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 62;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 251) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 62;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Set(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 252) {
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 62;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 253) {
+				int N2 = 1;
+				char str2[]{ "0123" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 63;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 254) {
+				int N2 = 1;
+				char str2[]{ "4567" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 63;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 255) {
+				int N2 = 1;
+				char str2[]{ "89ab" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 63;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+			}
+			if (br == 256) {
+				int N2 = 1;
+				char str2[]{ "cdef" };
+				int strN2 = 4;
+				char* pass2 = new char[N2 + 1];
+				for (int i = 0; i < N2; i++)
+				{
+					pass2[i] = str2[rand() % strN2];
+				}
+				pass2[N2] = 0;
+
+				int N = 63;
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass2 << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				key22.SetBase16(cstr);
+				this->rangeDiff3.Add(&key22);
+				keys[i].Set(&rangeDiff3);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+		}
 		if (rekey == 2) {
+
 			
+			if (nbit == 0) {
+
+				int N = 1 + rand() % 65;
+
+				char str[]{ "0123456789abcdef" };
+				int strN = 16;
+				char* pass = new char[N + 1];
+				for (int i = 0; i < N; i++)
+				{
+					pass[i] = str[rand() % strN];
+				}
+				pass[N] = 0;
+				std::stringstream ss;
+				ss << pass;
+				std::string input = ss.str();
+				char* cstr = &input[0];
+				keys[i].SetBase16(cstr);
+				if (diz == 0) {
+					printf("\r (%d bit) ", keys[i].GetBitLength());
+				}
+				if (diz == 1) {
+					printf("\r (%d bit) [%s]  ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				}
+
+			}
+
 			if (nbit == 1) {
 
 				int N = 20 + rand() % 45;
@@ -19817,8 +39129,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 5) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -19952,8 +39264,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 9) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -20088,8 +39400,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 13) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -20225,8 +39537,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 17) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -20361,8 +39673,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 21) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -20495,8 +39807,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 25) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -20631,8 +39943,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 29) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -20767,8 +40079,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 33) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -20904,8 +40216,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 37) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -21041,8 +40353,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 41) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -21177,8 +40489,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 45) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -21313,8 +40625,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 49) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -21449,8 +40761,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 53) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -21579,12 +40891,14 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				if (diz == 1) {
 					printf("\r [%s] (%d bit) ", keys[i].GetBase16().c_str(), keys[i].GetBitLength());
 				}
+
 			}
+
 			if (nbit == 57) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -21719,8 +41033,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 61) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -21855,8 +41169,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 65) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -21991,8 +41305,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 69) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -22127,8 +41441,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 73) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -22264,8 +41578,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 77) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -22394,12 +41708,15 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				if (diz == 1) {
 					printf("\r [%s] (%d bit) ", keys[i].GetBase16().c_str(), keys[i].GetBitLength());
 				}
+
 			}
+
+
 			if (nbit == 81) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -22532,8 +41849,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 85) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -22662,12 +41979,15 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				if (diz == 1) {
 					printf("\r [%s] (%d bit) ", keys[i].GetBase16().c_str(), keys[i].GetBitLength());
 				}
+
 			}
+
+
 			if (nbit == 89) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -22802,8 +42122,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 93) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -22938,8 +42258,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 97) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -23075,8 +42395,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 101) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -23211,8 +42531,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 105) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -23347,8 +42667,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 109) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -23481,8 +42801,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 113) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -23617,8 +42937,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 117) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -23753,8 +43073,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 121) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -23889,8 +43209,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 125) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -24025,8 +43345,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 129) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -24161,8 +43481,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 133) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -24290,12 +43610,15 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				if (diz == 1) {
 					printf("\r [%s] (%d bit) ", keys[i].GetBase16().c_str(), keys[i].GetBitLength());
 				}
+
 			}
+
+
 			if (nbit == 137) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -24428,8 +43751,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 141) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -24558,12 +43881,14 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				if (diz == 1) {
 					printf("\r [%s] (%d bit) ", keys[i].GetBase16().c_str(), keys[i].GetBitLength());
 				}
+
 			}
+
 			if (nbit == 145) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -24698,8 +44023,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 149) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -24832,8 +44157,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 153) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -24968,8 +44293,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 157) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -25102,8 +44427,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 161) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -25236,8 +44561,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 165) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -25369,8 +44694,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 169) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -25503,8 +44828,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 173) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -25637,8 +44962,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 177) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -25771,8 +45096,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 181) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -25907,8 +45232,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 185) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -26044,8 +45369,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 189) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -26174,12 +45499,15 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				if (diz == 1) {
 					printf("\r [%s] (%d bit) ", keys[i].GetBase16().c_str(), keys[i].GetBitLength());
 				}
+
 			}
+
+
 			if (nbit == 193) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -26308,12 +45636,14 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				if (diz == 1) {
 					printf("\r [%s] (%d bit) ", keys[i].GetBase16().c_str(), keys[i].GetBitLength());
 				}
+
 			}
+
 			if (nbit == 197) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -26442,12 +45772,15 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				if (diz == 1) {
 					printf("\r [%s] (%d bit) ", keys[i].GetBase16().c_str(), keys[i].GetBitLength());
 				}
+
 			}
+
+
 			if (nbit == 201) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -26580,8 +45913,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 205) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -26714,8 +46047,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 209) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -26848,8 +46181,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 213) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -26981,8 +46314,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 217) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -27112,8 +46445,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 221) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -27245,8 +46578,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 225) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -27381,8 +46714,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 229) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -27515,8 +46848,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 233) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -27649,8 +46982,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 237) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -27782,8 +47115,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 241) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -27916,8 +47249,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 
 			if (nbit == 245) {
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -28050,8 +47383,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 249) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -28184,8 +47517,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit == 253) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -28316,42 +47649,28 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 		}
 
 		if (rekey == 3) {
-
 			int N = nbit;
 			char str[]{ "0123456789abcdef" };
-			int strN = 16; // –∏–Ω–¥–µ–∫—Å –ø–æ—Å–ª–µ–¥–Ω–µ–≥–æ —ç–ª–µ–º–µ–Ω—Ç–∞ –≤ –º–∞—Å—Å–∏–≤–µ
-			//srand(time(NULL)); //–∏–Ω–∏—Ü–∏–∞–ª–∏–∑–∏—Ä—É–µ–º –≥–µ–Ω–µ—Ä–∞—Ç–æ—Ä —Å–ª—É—á–∞–π–Ω—ã—Ö —á–∏—Å–µ–ª
-			char* pass = new char[N + 1]; //–≤—ã–¥–µ–ª—è–µ–º –ø–∞–º—è—Ç—å –¥–ª—è —Å—Ç—Ä–æ–∫–∏ –ø–∞—Ä–æ–ª—è
+			int strN = 16; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
 			for (int i = 0; i < N; i++)
 			{
-				pass[i] = str[rand() % strN]; //–≤—Å—Ç–∞–≤–ª—è–µ–º —Å–ª—É—á–∞–π–Ω—ã–π —Å–∏–º–≤–æ–ª
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
 			}
-			pass[N] = 0; //–∑–∞–ø–∏—Å—ã–≤–∞–µ–º –≤ –∫–æ–Ω–µ—Ü —Å—Ç—Ä–æ–∫–∏ –ø—Ä–∏–∑–Ω–∞–∫ –∫–æ–Ω—Ü–∞ —Å—Ç—Ä–æ–∫–∏
-
-			int N2 = maxFound;
-			char str2[]{ "0123456789abcdef" };
-			int strN2 = 16; // –∏–Ω–¥–µ–∫—Å –ø–æ—Å–ª–µ–¥–Ω–µ–≥–æ —ç–ª–µ–º–µ–Ω—Ç–∞ –≤ –º–∞—Å—Å–∏–≤–µ
-			//srand(time(NULL)); //–∏–Ω–∏—Ü–∏–∞–ª–∏–∑–∏—Ä—É–µ–º –≥–µ–Ω–µ—Ä–∞—Ç–æ—Ä —Å–ª—É—á–∞–π–Ω—ã—Ö —á–∏—Å–µ–ª
-			char* pass2 = new char[N2 + 1]; //–≤—ã–¥–µ–ª—è–µ–º –ø–∞–º—è—Ç—å –¥–ª—è —Å—Ç—Ä–æ–∫–∏ –ø–∞—Ä–æ–ª—è
-			for (int i = 0; i < N2; i++)
-			{
-				pass2[i] = str2[rand() % strN2]; //–≤—Å—Ç–∞–≤–ª—è–µ–º —Å–ª—É—á–∞–π–Ω—ã–π —Å–∏–º–≤–æ–ª
-			}
-			pass2[N2] = 0; //–∑–∞–ø–∏—Å—ã–≤–∞–µ–º –≤ –∫–æ–Ω–µ—Ü —Å—Ç—Ä–æ–∫–∏ –ø—Ä–∏–∑–Ω–∞–∫ –∫–æ–Ω—Ü–∞ —Å—Ç—Ä–æ–∫–∏
-
-
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
 			std::stringstream ss;
-			ss << seed << pass << zez << pass2;
+			ss << seed << pass;
 			std::string input = ss.str();
+			//string nos = sha256(input);
 			char* cstr = &input[0];
 			keys[i].SetBase16(cstr);
 			if (diz == 0) {
-				printf("\r [%s] ", input.c_str());
+				printf("\r (%d bit) ", keys[i].GetBitLength());
 			}
 			if (diz == 1) {
-				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+				printf("\r (%d bit) [%s]  ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
 			}
-
 		}
 
 		if (rekey == 4) {
@@ -28363,7 +47682,7 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			
 			if (nbit2 == 0) {
 
-				int N = 1 + rand() % 64;
+				int N = 1 + rand() % 65;
 
 				char str[]{ "0123456789abcdef" };
 				int strN = 16;
@@ -28487,8 +47806,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 5) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -28620,8 +47939,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 9) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -28756,8 +48075,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 13) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -28890,8 +48209,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 17) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -29026,8 +48345,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 21) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -29160,8 +48479,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 25) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -29296,8 +48615,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 29) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -29432,8 +48751,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 33) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -29569,8 +48888,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 37) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -29703,8 +49022,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 41) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -29836,8 +49155,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 45) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -29972,8 +49291,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 49) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -30108,8 +49427,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 53) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -30243,8 +49562,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 57) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -30377,8 +49696,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 61) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -30513,8 +49832,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 65) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -30649,8 +49968,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 69) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -30785,8 +50104,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 73) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -30922,8 +50241,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 77) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -31059,8 +50378,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 81) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -31193,8 +50512,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 85) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -31330,8 +50649,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 89) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -31466,8 +50785,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 93) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -31602,8 +50921,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 97) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -31736,8 +51055,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 101) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -31872,8 +51191,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 105) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -32008,8 +51327,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 109) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -32142,8 +51461,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 113) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -32278,8 +51597,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 117) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -32412,8 +51731,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 121) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -32547,8 +51866,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 125) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -32683,8 +52002,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 129) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -32819,8 +52138,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 133) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -32955,8 +52274,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 137) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -33089,8 +52408,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 141) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -33225,8 +52544,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 145) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -33361,8 +52680,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 149) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -33495,8 +52814,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 153) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -33631,8 +52950,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 157) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -33765,8 +53084,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 161) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -33899,8 +53218,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 165) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -34032,8 +53351,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 169) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -34166,8 +53485,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 173) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -34300,8 +53619,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 177) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -34434,8 +53753,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 181) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -34570,8 +53889,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 185) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -34707,8 +54026,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 189) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -34844,8 +54163,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 193) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -34980,8 +54299,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 197) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -35117,8 +54436,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 201) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -35251,8 +54570,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 205) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -35385,8 +54704,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 209) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -35519,8 +54838,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 213) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -35652,8 +54971,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 217) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -35783,8 +55102,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 221) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -35916,8 +55235,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 225) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -36052,8 +55371,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 229) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -36186,8 +55505,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 233) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -36320,8 +55639,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 237) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -36453,8 +55772,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 241) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -36587,8 +55906,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 
 			if (nbit2 == 245) {
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -36721,8 +56040,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 249) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -36855,8 +56174,8 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 			if (nbit2 == 253) {
 
 				int N2 = 1;
-				char str2[]{ "123" };
-				int strN2 = 3;
+				char str2[]{ "0123" };
+				int strN2 = 4;
 
 				char* pass2 = new char[N2 + 1];
 				for (int i = 0; i < N2; i++)
@@ -36985,25 +56304,1832 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 				}
 			}
 		}
+
 		if (rekey == 5) {
-			printf("\n GPU Not support is mode 5! Only for CPU 1 core! USE -t 1");
-		}
-		
-		if (rekey == 6) {
-			keys[i].Rand(nbit);
+			int N = nbit;
+			char str[]{ "0123456789" };
+			int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
 			if (diz == 0) {
-				printf("\r (%d bit) ", keys[i].GetBitLength());
+				printf("\r [%s] ", pass);
 			}
 			if (diz == 1) {
-				printf("\r (%d bit) [%s] ", keys[i].GetBitLength(), keys[i].GetBase16().c_str());
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 6) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 7) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 8) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz0123456789" };
+			int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 9) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+			int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 10) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" };
+			int strN = 52; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 11) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+			int strN = 62; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 12) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+			int strN = 93; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 13) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+			int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 14) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ" };
+			int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 15) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+			int strN = 66; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 16) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789" };
+			int strN = 76; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 17) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+			int strN = 107; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 18) {
+			int N = nbit;
+			char str[]{ "0123456789" };
+			int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+		}
+		if (rekey == 19) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 20) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 21) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz0123456789" };
+			int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 22) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+			int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 23) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" };
+			int strN = 52; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 24) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+			int strN = 62; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 25) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+			int strN = 92; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 26) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+			int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 27) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ" };
+			int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 28) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+			int strN = 66; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 29) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789" };
+			int strN = 76; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 30) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+			int strN = 106; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			std::stringstream ss;
+			ss << seed << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 31) {
+			int N = nbit;
+			char str[]{ "0123456789" };
+			int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 32) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 33) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 34) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz0123456789" };
+			int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 35) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+			int strN = 36; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 36) {
+			int N = nbit;
+			char str[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" };
+			int strN = 52; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 37) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
+			int strN = 62; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 38) {
+			int N = nbit;
+			char str[]{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+			int strN = 93; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 39) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+			int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 40) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ" };
+			int strN = 33; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 41) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ" };
+			int strN = 66; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 42) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789" };
+			int strN = 76; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 43) {
+			setlocale(LC_ALL, "Russian");
+			int N = nbit;
+			char str[]{ "¿¡¬√ƒ≈®∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰Â∏ÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ0123456789!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+			int strN = 107; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			std::stringstream ss;
+			ss << seed << " " << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
 			}
 		}
 
-		if (rekey == 7) {
-			
-			printf("\n  ERROR!!! \n  Search mode for Passphrases from file on gpu in development\n\n  BYE   \n\n");
-			exit(-1);
+		if (rekey == 44) {
+			int N = 2;
+			char str[]{ "0123456789" };
+			int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N2 = nbit;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N3 = 1;
+			char str3[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+			int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N3; i++)
+			{
+				pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << pass3 << pass2 << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
 		}
+		if (rekey == 45) {
+			int N = 4;
+			char str[]{ "0123456789" };
+			int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N2 = nbit;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N3 = 1;
+			char str3[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+			int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N3; i++)
+			{
+				pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << pass3 << pass2 << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 46) {
+			int N = 6;
+			char str[]{ "0123456789" };
+			int strN = 10; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N2 = nbit;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N3 = 1;
+			char str3[]{ "ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
+			int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N3; i++)
+			{
+				pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << pass3 << pass2 << pass;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+
+		if (rekey == 47) {
+			int N2 = 3 + rand() % 7;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N4 = 3 + rand() % 7;
+			char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N4; i++)
+			{
+				pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << pass2 << " " << pass4;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 48) {
+			int N2 = 3 + rand() % 7;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			int N4 = 3 + rand() % 7;
+			char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N4; i++)
+			{
+				pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << seed << " " << pass2 << " " << pass4;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+		}
+		if (rekey == 49) {
+			int N = 3 + rand() % 3;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N1 = 3 + rand() % 3;
+			char str1[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN1 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass1 = new char[N1 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N1; i++)
+			{
+				pass1[i] = str1[rand() % strN1]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass1[N1] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N2 = 3 + rand() % 3;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N3 = 3 + rand() % 3;
+			char str3[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N3; i++)
+			{
+				pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N4 = 3 + rand() % 3;
+			char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N4; i++)
+			{
+				pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N5 = 3 + rand() % 3;
+			char str5[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN5 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass5 = new char[N5 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N5; i++)
+			{
+				pass5[i] = str5[rand() % strN5]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass5[N5] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N6 = 3 + rand() % 3;
+			char str6[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN6 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass6 = new char[N6 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N6; i++)
+			{
+				pass6[i] = str6[rand() % strN6]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass6[N6] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			int N7 = 3 + rand() % 3;
+			char str7[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN7 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass7 = new char[N7 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N7; i++)
+			{
+				pass7[i] = str7[rand() % strN7]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass7[N7] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N8 = 3 + rand() % 3;
+			char str8[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN8 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass8 = new char[N8 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N8; i++)
+			{
+				pass8[i] = str8[rand() % strN8]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass8[N8] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N9 = 3 + rand() % 3;
+			char str9[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN9 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass9 = new char[N9 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N9; i++)
+			{
+				pass9[i] = str9[rand() % strN9]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass9[N9] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N10 = 3 + rand() % 3;
+			char str10[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN10 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass10 = new char[N10 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N10; i++)
+			{
+				pass10[i] = str10[rand() % strN10]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass10[N10] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N11 = 3 + rand() % 3;
+			char str11[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN11 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass11 = new char[N11 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N11; i++)
+			{
+				pass11[i] = str11[rand() % strN11]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass11[N11] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << pass << " " << pass1 << " " << pass2 << " " << pass3 << " " << pass4 << " " << pass5 << " " << pass6 << " " << pass7 << " " << pass8 << " " << pass9 << " " << pass10 << " " << pass11;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+
+		if (rekey == 50) {
+			int N = 3 + rand() % 5;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N1 = 3 + rand() % 5;
+			char str1[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN1 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass1 = new char[N1 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N1; i++)
+			{
+				pass1[i] = str1[rand() % strN1]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass1[N1] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N2 = 3 + rand() % 5;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N3 = 3 + rand() % 5;
+			char str3[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N3; i++)
+			{
+				pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N4 = 3 + rand() % 5;
+			char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N4; i++)
+			{
+				pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N5 = 3 + rand() % 5;
+			char str5[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN5 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass5 = new char[N5 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N5; i++)
+			{
+				pass5[i] = str5[rand() % strN5]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass5[N5] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N6 = 3 + rand() % 5;
+			char str6[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN6 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass6 = new char[N6 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N6; i++)
+			{
+				pass6[i] = str6[rand() % strN6]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass6[N6] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N7 = 3 + rand() % 5;
+			char str7[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN7 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass7 = new char[N7 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N7; i++)
+			{
+				pass7[i] = str7[rand() % strN7]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass7[N7] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N8 = 3 + rand() % 5;
+			char str8[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN8 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass8 = new char[N8 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N8; i++)
+			{
+				pass8[i] = str8[rand() % strN8]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass8[N8] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N9 = 3 + rand() % 5;
+			char str9[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN9 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass9 = new char[N9 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N9; i++)
+			{
+				pass9[i] = str9[rand() % strN9]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass9[N9] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N10 = 3 + rand() % 5;
+			char str10[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN10 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass10 = new char[N10 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N10; i++)
+			{
+				pass10[i] = str10[rand() % strN10]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass10[N10] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N11 = 3 + rand() % 5;
+			char str11[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN11 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass11 = new char[N11 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N11; i++)
+			{
+				pass11[i] = str11[rand() % strN11]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass11[N11] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << pass << " " << pass1 << " " << pass2 << " " << pass3 << " " << pass4 << " " << pass5 << " " << pass6 << " " << pass7 << " " << pass8 << " " << pass9 << " " << pass10 << " " << pass11;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+		if (rekey == 51) {
+			int N = 3 + rand() % 8;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N1 = 3 + rand() % 8;
+			char str1[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN1 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass1 = new char[N1 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N1; i++)
+			{
+				pass1[i] = str1[rand() % strN1]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass1[N1] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N2 = 3 + rand() % 8;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N3 = 3 + rand() % 8;
+			char str3[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N3; i++)
+			{
+				pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N4 = 3 + rand() % 8;
+			char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N4; i++)
+			{
+				pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N5 = 3 + rand() % 8;
+			char str5[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN5 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass5 = new char[N5 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N5; i++)
+			{
+				pass5[i] = str5[rand() % strN5]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass5[N5] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N6 = 3 + rand() % 8;
+			char str6[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN6 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass6 = new char[N6 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N6; i++)
+			{
+				pass6[i] = str6[rand() % strN6]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass6[N6] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N7 = 3 + rand() % 8;
+			char str7[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN7 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass7 = new char[N7 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N7; i++)
+			{
+				pass7[i] = str7[rand() % strN7]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass7[N7] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N8 = 3 + rand() % 8;
+			char str8[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN8 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass8 = new char[N8 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N8; i++)
+			{
+				pass8[i] = str8[rand() % strN8]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass8[N8] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N9 = 3 + rand() % 8;
+			char str9[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN9 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass9 = new char[N9 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N9; i++)
+			{
+				pass9[i] = str9[rand() % strN9]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass9[N9] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N10 = 3 + rand() % 8;
+			char str10[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN10 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass10 = new char[N10 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N10; i++)
+			{
+				pass10[i] = str10[rand() % strN10]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass10[N10] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N11 = 3 + rand() % 8;
+			char str11[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN11 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass11 = new char[N11 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N11; i++)
+			{
+				pass11[i] = str11[rand() % strN11]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass11[N11] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			std::stringstream ss;
+			ss << pass << " " << pass1 << " " << pass2 << " " << pass3 << " " << pass4 << " " << pass5 << " " << pass6 << " " << pass7 << " " << pass8 << " " << pass9 << " " << pass10 << " " << pass11;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+
+		if (rekey == 52) {
+			int N = 3 + rand() % 10;
+			char str[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N1 = 3 + rand() % 10;
+			char str1[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN1 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass1 = new char[N1 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N1; i++)
+			{
+				pass1[i] = str1[rand() % strN1]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass1[N1] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N2 = 3 + rand() % 10;
+			char str2[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN2 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass2 = new char[N2 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N2; i++)
+			{
+				pass2[i] = str2[rand() % strN2]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass2[N2] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N3 = 3 + rand() % 10;
+			char str3[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN3 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass3 = new char[N3 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N3; i++)
+			{
+				pass3[i] = str3[rand() % strN3]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass3[N3] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N4 = 3 + rand() % 10;
+			char str4[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN4 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass4 = new char[N4 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N4; i++)
+			{
+				pass4[i] = str4[rand() % strN4]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass4[N4] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N5 = 3 + rand() % 10;
+			char str5[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN5 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass5 = new char[N5 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N5; i++)
+			{
+				pass5[i] = str5[rand() % strN5]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass5[N5] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N6 = 3 + rand() % 10;
+			char str6[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN6 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass6 = new char[N6 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N6; i++)
+			{
+				pass6[i] = str6[rand() % strN6]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass6[N6] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+
+			int N7 = 3 + rand() % 10;
+			char str7[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN7 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass7 = new char[N7 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N7; i++)
+			{
+				pass7[i] = str7[rand() % strN7]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass7[N7] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N8 = 3 + rand() % 10;
+			char str8[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN8 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass8 = new char[N8 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N8; i++)
+			{
+				pass8[i] = str8[rand() % strN8]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass8[N8] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N9 = 3 + rand() % 10;
+			char str9[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN9 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass9 = new char[N9 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N9; i++)
+			{
+				pass9[i] = str9[rand() % strN9]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass9[N9] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N10 = 3 + rand() % 10;
+			char str10[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN10 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass10 = new char[N10 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N10; i++)
+			{
+				pass10[i] = str10[rand() % strN10]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass10[N10] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+
+			int N11 = 3 + rand() % 10;
+			char str11[]{ "abcdefghijklmnopqrstuvwxyz" };
+			int strN11 = 26; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass11 = new char[N11 + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N11; i++)
+			{
+				pass11[i] = str11[rand() % strN11]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass11[N11] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			std::stringstream ss;
+			ss << pass << " " << pass1 << " " << pass2 << " " << pass3 << " " << pass4 << " " << pass5 << " " << pass6 << " " << pass7 << " " << pass8 << " " << pass9 << " " << pass10 << " " << pass11;
+			std::string input = ss.str();
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", input.c_str());
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", input.c_str(), keys[i].GetBase16().c_str());
+			}
+
+		}
+	
+		if (rekey == 53) {
+			string initial = seed;
+			string str = initial;
+			string last;
+			for (int i = 0; i < 1000000000; i++) {
+				last = str;
+				str = increment(last);
+
+				compare(last, str);
+				string input = str;
+				string nos = sha256(input);
+				char* cstr = &nos[0];
+				keys[i].SetBase16(cstr);
+				if (diz == 0) {
+					printf("\r [%s] ", str.c_str());
+				}
+				if (diz == 1) {
+					printf("\r [%s] [%s] ", str.c_str(), keys[i].GetBase16().c_str());
+				}
+
+			}
+		}
+		if (rekey == 54) {
+			int N = nbit;
+			char str[]{ "!#$%&'()*+,-./:;<=>?@[\]^_`{|}~" };
+			int strN = 31; // ËÌ‰ÂÍÒ ÔÓÒÎÂ‰ÌÂ„Ó ˝ÎÂÏÂÌÚ‡ ‚ Ï‡ÒÒË‚Â
+			//srand(time(NULL)); //ËÌËˆË‡ÎËÁËÛÂÏ „ÂÌÂ‡ÚÓ ÒÎÛ˜‡ÈÌ˚ı ˜ËÒÂÎ
+			char* pass = new char[N + 1]; //‚˚‰ÂÎˇÂÏ Ô‡ÏˇÚ¸ ‰Îˇ ÒÚÓÍË Ô‡ÓÎˇ
+			for (int i = 0; i < N; i++)
+			{
+				pass[i] = str[rand() % strN]; //‚ÒÚ‡‚ÎˇÂÏ ÒÎÛ˜‡ÈÌ˚È ÒËÏ‚ÓÎ
+			}
+			pass[N] = 0; //Á‡ÔËÒ˚‚‡ÂÏ ‚ ÍÓÌÂˆ ÒÚÓÍË ÔËÁÌ‡Í ÍÓÌˆ‡ ÒÚÓÍË
+			string input = pass;
+			string nos = sha256(input);
+			char* cstr = &nos[0];
+			keys[i].SetBase16(cstr);
+			if (diz == 0) {
+				printf("\r [%s] ", pass);
+			}
+			if (diz == 1) {
+				printf("\r [%s] [%s] ", pass, keys[i].GetBase16().c_str());
+			}
+
+		}
+		
 
 		Int k(keys + i);
 		// Starting key is at the middle of the group
@@ -37011,11 +58137,11 @@ void LostCoins::getGPUStartingKeys(int thId, int groupSize, int nbThread, Int *k
 		p[i] = secp->ComputePublicKey(&k);
 		//if (startPubKeySpecified)
 		//	p[i] = secp->AddDirect(p[i], startPubKey);
-	 }
-   }
+	}
+
 }
 
-void LostCoins::FindKeyGPU(TH_PARAM* ph)
+void LostCoins::FindKeyGPU(TH_PARAM *ph)
 {
 
 	bool ok = true;
@@ -37024,13 +58150,11 @@ void LostCoins::FindKeyGPU(TH_PARAM* ph)
 
 	// Global init
 	int thId = ph->threadId;
-	Int tRangeStart = ph->rangeStart1;
-	Int tRangeEnd = ph->rangeEnd1;
 	GPUEngine g(ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, (rekey != 0),
 		BLOOM_N, bloom->get_bits(), bloom->get_hashes(), bloom->get_bf(), DATA, TOTAL_ADDR);
 	int nbThread = g.GetNbThread();
-	Point* p = new Point[nbThread];
-	Int* keys = new Int[nbThread];
+	Point *p = new Point[nbThread];
+	Int *keys = new Int[nbThread];
 	vector<ITEM> found;
 	printf("  GPU         : %s\n\n", g.deviceName.c_str());
 	counters[thId] = 0;
@@ -37070,10 +58194,10 @@ void LostCoins::FindKeyGPU(TH_PARAM* ph)
 
 		if (ok) {
 			for (int i = 0; i < nbThread; i++) {
-				keys[i].Add((uint64_t)STEP_SIZE);
+				keys[i].Add((uint64_t)STEP_SIZE);	
 			}
 			counters[thId] += 6ULL * STEP_SIZE * nbThread; // Point +  endo1 + endo2 + symetrics
-		}
+		} 
 		//ok = g.ClearOutBuffer();
 	}
 	delete[] keys;
@@ -37128,16 +58252,12 @@ void LostCoins::rekeyRequest(TH_PARAM *p)
 
 }
 
-
 // ----------------------------------------------------------------------------
 
 uint64_t LostCoins::getGPUCount()
 {
-	uint64_t count = 0;
-	if (value777 > 1000000) {
-		count = value777;
-	}
 
+	uint64_t count = 0;
 	for (int i = 0; i < nbGPUThread; i++)
 		count += counters[0x80L + i];
 	return count;
@@ -37154,20 +58274,6 @@ uint64_t LostCoins::getCPUCount()
 
 }
 
-
-void SetupRanges(uint32_t totalThreads)
-{
-	Int threads;
-	Int rangeStart1;
-	Int rangeEnd1;
-	Int rangeDiff;
-	Int rangeDiff2;
-	Int rangeDiff3;
-	threads.SetInt32(totalThreads);
-	rangeDiff2.Set(&rangeEnd1);
-	rangeDiff2.Sub(&rangeStart1);
-	rangeDiff2.Div(&threads);
-}
 // ----------------------------------------------------------------------------
 
 void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gridSize, bool& should_exit)
@@ -37179,6 +58285,7 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 	nbCPUThread = nbThread;
 	nbGPUThread = (useGpu ? (int)gpuId.size() : 0);
 	nbFoundKey = 0;
+
 	memset(counters, 0, sizeof(counters));
 
 	//printf("Number of CPU thread: %d\n\n", nbCPUThread);
@@ -37191,9 +58298,6 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 		params[i].obj = this;
 		params[i].threadId = i;
 		params[i].isRunning = true;
-		params[i].rangeStart1.Set(&rangeStart1);
-		rangeStart1.Add(&rangeDiff2);
-		params[i].rangeEnd1.Set(&rangeStart1);
 
 #ifdef WIN64
 		DWORD thread_id;
@@ -37214,10 +58318,6 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 		params[nbCPUThread + i].gpuId = gpuId[i];
 		params[nbCPUThread + i].gridSizeX = gridSize[2 * i];
 		params[nbCPUThread + i].gridSizeY = gridSize[2 * i + 1];
-
-		params[nbCPUThread + i].rangeStart1.Set(&rangeStart1);
-		rangeStart1.Add(&rangeDiff2);
-		params[nbCPUThread + i].rangeEnd1.Set(&rangeStart1);
 #ifdef WIN64
 		DWORD thread_id;
 		CreateThread(NULL, 0, _FindKeyGPU, (void *)(params + (nbCPUThread + i)), 0, &thread_id);
@@ -37249,6 +58349,7 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 	memset(lastGpukeyRate, 0, sizeof(lastkeyRate));
 
 	// Wait that all threads have started
+	// Wait that all threads have started
 	while (!hasStarted(params)) {
 		Timer::SleepMillis(500);
 	}
@@ -37257,58 +58358,17 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 	Timer::Init();
 	t0 = Timer::get_tick();
 	startTime = t0;
-	Int p100;
-	Int ICount;
-	p100.SetInt32(100);
-	int completedPerc = 0;
-	uint64_t rKeyCount = 0;
+
 	while (isAlive(params)) {
 
-		int delay = 1000;
+		int delay = 2000;
 		while (isAlive(params) && delay > 0) {
 			Timer::SleepMillis(500);
 			delay -= 500;
 		}
-
+		
 		gpuCount = getGPUCount();
 		uint64_t count = getCPUCount() + gpuCount;
-		ICount.SetInt64(count);
-		int completedBits = ICount.GetBitLength();
-
-		char* gyg = &seed[0];
-		char* fun = &zez[0];
-		this->rangeStart1.SetBase16(gyg);
-		this->rangeEnd1.SetBase16(fun);
-
-		rangeDiff3.Set(&rangeStart1);
-		rangeDiff3.Add(&ICount);
-		minuty++;
-		
-		if (diz == 4) {
-			if (nbit == 0) {
-				nbit = nbit + 60;
-			}
-			if (minuty == nbit * 60) {
-
-				char* ctimeBuff;
-				time_t now = time(NULL);
-				ctimeBuff = ctime(&now);
-
-				FILE* ptrFile = fopen("LostCoins-Continue.bat", "w+");
-				fprintf(ptrFile, "created: %s", ctimeBuff);
-				fprintf(ptrFile, ":loop \n");
-				fprintf(ptrFile, "LostCoins.exe -t 0 -g -i 0 -x 256,256 -f %s -r 1 -s %s -z %s -d 4 -n %d -m 777 \n", addressFile.c_str(), rangeStart1.GetBase16().c_str(), rangeEnd1.GetBase16().c_str(), nbit);
-				fprintf(ptrFile, "goto :loop \n");
-				fprintf(ptrFile, "%" PRIu64 "\n", count);
-				fclose(ptrFile);
-				minuty = minuty - nbit * 60;
-			}
-
-			//completedPerc = CalcPercantage(ICount, rangeStart1, rangeDiff2);
-			ICount.Mult(&p100);
-			ICount.Div(&this->rangeDiff2);
-			completedPerc = std::stoi(ICount.GetBase10());
-		}
 
 		t1 = Timer::get_tick();
 		keyRate = (double)(count - lastCount) / (t1 - t0);
@@ -37317,6 +58377,7 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 		lastGpukeyRate[filterPos % FILTER_SIZE] = gpuKeyRate;
 		filterPos++;
 
+		// KeyRate smoothing
 		double avgKeyRate = 0.0;
 		double avgGpuKeyRate = 0.0;
 		uint32_t nbSample;
@@ -37326,7 +58387,6 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 		}
 		avgKeyRate /= (double)(nbSample);
 		avgGpuKeyRate /= (double)(nbSample);
-
 		if (nbFoundKey > maxFound) {
 			printf(" Exceeded message limit %d Found adreses. \n For more messages use -m 1000 (-m 10000000)  \n\n\n ", maxFound);
 			exit(1);
@@ -37335,7 +58395,7 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 		if (diz == 0) {
 			if (isAlive(params)) {
 				memset(timeStr, '\0', 256);
-				printf("\r                                                    [%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [T: %s] [F: %d]  ",
+				printf("\r                                                   [%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [T: %s] [F: %d]  ",
 					toTimeStr(t1, timeStr),
 					avgKeyRate / 1000000.0,
 					avgGpuKeyRate / 1000000.0,
@@ -37346,68 +58406,8 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 		if (diz == 1) {
 			if (isAlive(params)) {
 				memset(timeStr, '\0', 256);
-				printf("\r                                                                                       [%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [T: %s] [F: %d]  ",
+				printf("\r                                                                                      [%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [T: %s] [F: %d]  ",
 					toTimeStr(t1, timeStr),
-					avgKeyRate / 1000000.0,
-					avgGpuKeyRate / 1000000.0,
-					formatThousands(count).c_str(),
-					nbFoundKey);
-			}
-		}
-		if (diz == 2) {
-			if (isAlive(params)) {
-				memset(timeStr, '\0', 256);
-				printf("\r  [%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [T: %s] [F: %d]  ",
-					toTimeStr(t1, timeStr),
-					avgKeyRate / 1000000.0,
-					avgGpuKeyRate / 1000000.0,
-					formatThousands(count).c_str(),
-					nbFoundKey);
-			}
-		}
-		if (diz == 3) {
-			if (isAlive(params)) {
-				memset(timeStr, '\0', 256);
-				printf("\r  [%s] [CPU: %.2f Kk/s] [T: %s] [F: %d]  ",
-					toTimeStr(t1, timeStr),
-					avgKeyRate / 1000.0,
-					formatThousands(count).c_str(),
-					nbFoundKey);
-			}
-
-		}
-		if (diz == 4) {
-			if (isAlive(params)) {
-				memset(timeStr, '\0', 256);
-				printf("\r  [%s] [%064s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [C: %d%%] [T: %s (%d bit)] [F: %d]              ",
-					toTimeStr(t1, timeStr),
-					rangeDiff3.GetBase16().c_str(),
-					avgKeyRate / 1000000.0,
-					avgGpuKeyRate / 1000000.0,
-					completedPerc,
-					formatThousands(count).c_str(),
-					completedBits,
-					nbFoundKey);
-			}
-
-		}
-		if (diz == 5) {
-			if (isAlive(params)) {
-				memset(timeStr, '\0', 256);
-				printf("\r                                    [%s] [CPU: %.2f Kk/s] [T: %s] [F: %d]  ",
-					toTimeStr(t1, timeStr),
-					avgKeyRate / 1000.0,
-					formatThousands(count).c_str(),
-					nbFoundKey);
-			}
-
-		}
-		if (diz == 6) {
-			if (isAlive(params)) {
-				memset(timeStr, '\0', 256);
-				printf("\r  [%s] [%064s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [T: %s] [F: %d]  ",
-					toTimeStr(t1, timeStr),
-					rangeDiff3.GetBase16().c_str(),
 					avgKeyRate / 1000000.0,
 					avgGpuKeyRate / 1000000.0,
 					formatThousands(count).c_str(),
@@ -37415,10 +58415,10 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 			}
 		}
 
-		if (diz > 6) {
+		if (diz > 1) {
 			if (isAlive(params)) {
 				memset(timeStr, '\0', 256);
-				printf("\r  [%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [T: %s] [F: %d]  ",
+				printf("\r [%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [T: %s] [F: %d]  ",
 					toTimeStr(t1, timeStr),
 					avgKeyRate / 1000000.0,
 					avgGpuKeyRate / 1000000.0,
@@ -37426,126 +58426,44 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 					nbFoundKey);
 			}
 		}
-		
 		if (rekey == 0) {
-
-			if (nbit2 > 0) {
-
-				if ((count - lastRekey) > (1 * 1)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
-			}
-			else {
-
-				if ((count - lastRekey) > (1000000000 * maxFound)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
+			if ((count - lastRekey) > (1 * 1)) {
+				// Rekey request
+				rekeyRequest(params);
+				lastRekey = count;
 			}
 		}
-		
-		if (rekey == 2) {
-
-			if (nbit2 > 0) {
-
-				if ((count - lastRekey) > (1 * 1)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
+		if (rekey == 1) {
+			if((count - lastRekey) > (1 * 100000000000)) {
+				// Rekey request
+				rekeyRequest(params);
+				lastRekey = count;
 			}
-			else {
-
-				if ((count - lastRekey) > (1000000000 * maxFound)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
+		}
+		if (rekey == 2) {
+			if ((count - lastRekey) > (1 * 100000000000)) {
+				// Rekey request
+				rekeyRequest(params);
+				lastRekey = count;
 			}
 		}
 		if (rekey == 3) {
-
-			if (nbit2 > 0) {
-
-				if ((count - lastRekey) > (1 * 1)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
-			}
-			else {
-
-				if ((count - lastRekey) > (47200000 * maxFound)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
+			if ((count - lastRekey) > (1 * 100000000000)) {
+				// Rekey request
+				rekeyRequest(params);
+				lastRekey = count;
 			}
 		}
 		if (rekey == 4) {
-
-			if (nbit2 > 0) {
-
-				if ((count - lastRekey) > (1 * 1)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
-			}
-			else {
-
-				if ((count - lastRekey) > (1000000000 * maxFound)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
+			if ((count - lastRekey) > (1 * 100000000000)) {
+				// Rekey request
+				rekeyRequest(params);
+				lastRekey = count;
 			}
 		}
-
-		if (rekey == 5) {
-
-			if (nbit2 > 0) {
-
-				if ((count - lastRekey) > (1 * 1)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
-			}
-			else {
-
-				if ((count - lastRekey) > (1000000000)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
-			}
-		}
-		
-		if (rekey == 6) {
-
-			if (nbit2 > 0) {
-
-				if ((count - lastRekey) > (1 * 1)) {
-					// Rekey request
-					rekeyRequest(params);
-					lastRekey = count;
-				}
-			}
-			else {
-
-				if ((count - lastRekey) > (1000000000 * maxFound)) {
-					rekeyRequest(params);
-					lastRekey = count;
-				}
-			}
-		}
-
-		if (rekey > 6) {
+		if (rekey > 4) {
 			if ((count - lastRekey) > (1 * 1)) {
+				// Rekey request
 				rekeyRequest(params);
 				lastRekey = count;
 			}
@@ -37554,23 +58472,14 @@ void LostCoins::Search(int nbThread, std::vector<int> gpuId, std::vector<int> gr
 		lastCount = count;
 		lastGPUCount = gpuCount;
 		t0 = t1;
-		//endOfSearch = should_exit;
-
-
-		if (rekey == 1) {
-			lastCount = count;
-			lastGPUCount = gpuCount;
-			t0 = t1;
-			if (should_exit || completedPerc > 101)
-				endOfSearch = true;
-		}
-
-		
+		endOfSearch = should_exit;
 	}
 	
 	free(params);
 
 }
+
+// ----------------------------------------------------------------------------
 
 string LostCoins::GetHex(vector<unsigned char> &buffer)
 {
@@ -37584,11 +58493,15 @@ string LostCoins::GetHex(vector<unsigned char> &buffer)
 	return ret;
 }
 
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+
 int LostCoins::CheckBloomBinary(const uint8_t *hash)
 {
 	if (bloom->check(hash, 20) > 0) {
 		uint8_t* temp_read;
-		uint64_t half, min, max, current;
+		uint64_t half, min, max, current; //, current_offset
 		int64_t rcmp;
 		int32_t r = 0;
 		min = 0;

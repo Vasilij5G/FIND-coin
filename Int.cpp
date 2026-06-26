@@ -275,11 +275,6 @@ uint32_t Int::GetInt32() {
 	return bits[0];
 }
 
-void Int::SetInt64(uint64_t value)
-{
-	CLEAR();
-	bits64[0] = value;
-}
 // ------------------------------------------------
 
 unsigned char Int::GetByte(int n) {
@@ -1053,7 +1048,10 @@ void  Int::SetBaseN(int n, char* charset, char* value) {
 	int lgth = (int)strlen(value);
 	for (int i = lgth - 1; i >= 0; i--) {
 		char* p = strchr(charset, toupper(value[i]));
-
+		if (!p) {
+			printf("Invalid charset !!\n");
+			return;
+		}
 		int id = (int)(p - charset);
 		c.SetInt32(id);
 		c.Mult(&pw);
